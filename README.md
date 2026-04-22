@@ -9,6 +9,10 @@ This package is designed for Node.js runtimes first, with Express and other fram
 `logister-js` is an initial SDK scaffold focused on a clean publishable package shape and a base HTTP client.
 Framework-specific integrations like Express, NestJS, and Next.js server-side support can build on top of this package.
 
+Current framework roadmap:
+
+- Express integration plan: ./docs/express-integration-plan.md
+
 ## Install
 
 ```bash
@@ -42,6 +46,69 @@ await client.captureMessage("SDK booted", {
   context: { runtime: "node" }
 });
 ```
+
+## Express quick start
+
+```ts
+import express from "express";
+import { LogisterClient } from "logister-js";
+import {
+  createLogisterMiddleware,
+  createLogisterErrorHandler,
+  getLogisterRequestContext
+} from "logister-js/express";
+
+const app = express();
+const logister = new LogisterClient({
+  apiKey: process.env.LOGISTER_API_KEY ?? "",
+  baseUrl: process.env.LOGISTER_BASE_URL ?? "https://logister.org",
+  environment: process.env.LOGISTER_ENVIRONMENT,
+  release: process.env.LOGISTER_RELEASE
+});
+
+app.use(createLogisterMiddleware({ client: logister }));
+
+app.get("/orders/:id", async (req, res) => {
+  const context = getLogisterRequestContext(req);
+
+  await logister.captureMessage("orders route reached", {
+    context: {
+      request_id: context?.requestId,
+      route: context?.route
+    }
+  });
+
+  res.json({ ok: true, requestId: context?.requestId });
+});
+
+app.get("/boom", () => {
+  throw new Error("BROKEN");
+});
+
+app.use(createLogisterErrorHandler({ client: logister }));
+
+app.use((error, _req, res, _next) => {
+  res.status(500).json({ error: error.message });
+});
+
+app.listen(3000, () => {
+  console.log("Listening on http://localhost:3000");
+});
+```
+
+What this gives you by default:
+
+- uncaught Express route errors sent as Logister `error` events
+- completed requests sent as Logister `transaction` events
+- adopted or generated request IDs
+- request context you can reuse in custom logs and metrics
+
+Recommended middleware order:
+
+1. `createLogisterMiddleware()` near the top of the stack
+2. your routes and app middleware
+3. `createLogisterErrorHandler()` after routes
+4. your final Express error response middleware last
 
 ## Core API
 
