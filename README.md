@@ -2,12 +2,12 @@
 
 JavaScript and TypeScript SDK for sending errors, logs, metrics, transactions, and check-ins to Logister.
 
-Use this package when you want a Node or TypeScript app to send telemetry into the Logister backend.
+Use this package when you want a Node, TypeScript, or server-side JavaScript app to send telemetry into the Logister backend.
 
 - Main Logister app: https://github.com/taimoorq/logister
 - JavaScript integration docs: https://docs.logister.org/integrations/javascript/
 
-This package is designed for Node.js runtimes first, with Express and other framework integrations layered on top.
+This package is designed for Node.js runtimes first, especially the kinds of JavaScript projects that mix HTTP handlers, background jobs, console output, and custom operational code.
 
 ## Status
 
@@ -38,6 +38,8 @@ bun add logister-js
 
 ## Quick start
 
+Use the base client when you want direct control from a script, worker, background job, or framework hook.
+
 ```ts
 import { LogisterClient } from "logister-js";
 
@@ -53,6 +55,8 @@ await client.captureMessage("SDK booted", {
 ```
 
 ## Express quick start
+
+This is the fastest path if your JavaScript service is already organized around Express middleware and error handlers.
 
 ```ts
 import express from "express";
@@ -110,6 +114,8 @@ What this gives you by default:
 
 ## Console logging
 
+This is the lowest-friction path when your app already leans on `console.warn()` and `console.error()` during jobs, scripts, or server-side troubleshooting.
+
 ```ts
 import { LogisterClient } from "logister-js";
 import { instrumentConsole } from "logister-js/console";
@@ -151,6 +157,8 @@ Recommended middleware order:
 - `sendEvent(payload)`
 
 ## Node helpers
+
+Use the Node helpers when you want runtime metadata without hand-building it into every event.
 
 ```ts
 import { LogisterClient } from "logister-js";
