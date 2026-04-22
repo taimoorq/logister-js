@@ -1,0 +1,5 @@
+app_name: logister-js
+tag_prefix: v
+changelog_path: CHANGELOG.md
+create_github_release_on_tag: true
+mark_release_as_latest: true

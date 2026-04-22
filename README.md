@@ -153,6 +153,8 @@ npm run check
 
 Publishing targets the npm registry. npm is the canonical registry consumed by npm, Yarn, pnpm, and Bun.
 
+GitHub releases are managed separately in this repo and are driven by `CHANGELOG.md` plus `config/release.yml`. Pushing a tag like `v0.1.0` will publish the npm package and create or update the matching GitHub release.
+
 ### Manual publish
 
 ```bash
