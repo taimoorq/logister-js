@@ -1,0 +1,70 @@
+{
+  "name": "logister-js",
+  "version": "0.1.0",
+  "description": "JavaScript and TypeScript SDK for sending errors, logs, metrics, transactions, and check-ins to Logister.",
+  "license": "MIT",
+  "homepage": "https://docs.logister.org/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/taimoorq/logister-js.git"
+  },
+  "bugs": {
+    "url": "https://github.com/taimoorq/logister-js/issues"
+  },
+  "keywords": [
+    "logister",
+    "logging",
+    "observability",
+    "error-tracking",
+    "typescript",
+    "javascript",
+    "node"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./node": {
+      "types": "./dist/node.d.ts",
+      "import": "./dist/node.js",
+      "require": "./dist/node.cjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "packageManager": "npm@10.9.2",
+  "scripts": {
+    "clean": "rimraf dist coverage",
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm run test && npm run build",
+    "prepublishOnly": "npm run check"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.21",
+    "rimraf": "^6.0.1",
+    "tsup": "^8.5.0",
+    "typescript": "^5.8.3",
+    "vitest": "^3.1.2"
+  }
+}
