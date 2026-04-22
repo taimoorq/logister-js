@@ -1,6 +1,6 @@
 {
   "name": "logister-js",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "JavaScript and TypeScript SDK for sending errors, logs, metrics, transactions, and check-ins to Logister.",
   "license": "MIT",
   "homepage": "https://docs.logister.org/",

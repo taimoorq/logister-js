@@ -33,7 +33,7 @@ export class LogisterClient {
     this.environment = options.environment;
     this.release = options.release;
     this.fetchImpl = options.fetch ?? fetch;
-    this.userAgent = options.userAgent ?? "logister-js/0.2.0";
+    this.userAgent = options.userAgent ?? "logister-js/0.2.1";
   }
 
   async sendEvent(payload: LogisterEventPayload): Promise<Response> {
@@ -242,30 +242,39 @@ function normalizeBacktrace(stack: string | undefined): string[] | undefined {
 function parseStackFrame(line: string): LogisterStackFrame | undefined {
   const chromeWithMethod = /^at (?<name>.+?) \((?<filename>.+?):(?<lineno>\d+):(?<colno>\d+)\)$/u.exec(line);
   if (chromeWithMethod?.groups) {
+    const { name, filename, lineno, colno } = chromeWithMethod.groups;
+    if (!name || !filename || !lineno || !colno) return undefined;
+
     return {
-      name: chromeWithMethod.groups.name,
-      filename: chromeWithMethod.groups.filename,
-      lineno: Number(chromeWithMethod.groups.lineno),
-      colno: Number(chromeWithMethod.groups.colno)
+      name,
+      filename,
+      lineno: Number(lineno),
+      colno: Number(colno)
     };
   }
 
   const chromeNoMethod = /^at (?<filename>.+?):(?<lineno>\d+):(?<colno>\d+)$/u.exec(line);
   if (chromeNoMethod?.groups) {
+    const { filename, lineno, colno } = chromeNoMethod.groups;
+    if (!filename || !lineno || !colno) return undefined;
+
     return {
-      filename: chromeNoMethod.groups.filename,
-      lineno: Number(chromeNoMethod.groups.lineno),
-      colno: Number(chromeNoMethod.groups.colno)
+      filename,
+      lineno: Number(lineno),
+      colno: Number(colno)
     };
   }
 
   const firefox = /^(?<name>[^@]+)@(?<filename>.+?):(?<lineno>\d+):(?<colno>\d+)$/u.exec(line);
   if (firefox?.groups) {
+    const { name, filename, lineno, colno } = firefox.groups;
+    if (!name || !filename || !lineno || !colno) return undefined;
+
     return {
-      name: firefox.groups.name,
-      filename: firefox.groups.filename,
-      lineno: Number(firefox.groups.lineno),
-      colno: Number(firefox.groups.colno)
+      name,
+      filename,
+      lineno: Number(lineno),
+      colno: Number(colno)
     };
   }
 

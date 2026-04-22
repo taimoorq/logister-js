@@ -2,6 +2,12 @@
 
 All notable changes to `logister-js` will be documented in this file.
 
+## v0.2.1 - 2026-04-22
+
+### Fixed
+
+- Updated the npm trusted publishing workflow to match npm's current GitHub Actions guidance so tagged releases can publish successfully from GitHub-hosted runners.
+
 ## v0.2.0 - 2026-04-22
 
 ### Added
