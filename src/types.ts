@@ -9,6 +9,22 @@ export type LogisterEventType =
 
 export type LogisterContext = Record<string, unknown>;
 
+export interface LogisterStackFrame {
+  filename: string;
+  lineno: number;
+  colno?: number | undefined;
+  name?: string | undefined;
+}
+
+export interface LogisterExceptionContext extends LogisterContext {
+  class: string;
+  message: string;
+  stack?: string | undefined;
+  backtrace?: string[] | undefined;
+  frames?: LogisterStackFrame[] | undefined;
+  cause?: unknown;
+}
+
 export interface LogisterEventPayload {
   event_type: LogisterEventType;
   level?: LogisterLevel | undefined;

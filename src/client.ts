@@ -4,7 +4,9 @@ import type {
   LogisterCheckInPayload,
   LogisterClientOptions,
   LogisterContext,
+  LogisterExceptionContext,
   LogisterEventPayload,
+  LogisterStackFrame,
   MetricOptions
 } from "./types";
 
@@ -143,12 +145,15 @@ export class LogisterClient {
   }
 }
 
-function normalizeError(error: unknown): LogisterContext {
+function normalizeError(error: unknown): LogisterExceptionContext {
   if (error instanceof Error) {
+    const stack = error.stack;
     return compact({
       class: error.name,
       message: error.message,
-      stack: error.stack,
+      stack,
+      frames: normalizeStackFrames(stack),
+      backtrace: normalizeBacktrace(stack),
       cause: error.cause instanceof Error
         ? compact({
             class: error.cause.name,
@@ -179,6 +184,65 @@ function normalizeTimestamp(value: string | Date | undefined): string | undefine
   if (!value) return undefined;
   if (value instanceof Date) return value.toISOString();
   return value;
+}
+
+function normalizeStackFrames(stack: string | undefined): LogisterStackFrame[] | undefined {
+  if (!stack) return undefined;
+
+  const frames = stack
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .slice(1)
+    .map(parseStackFrame)
+    .filter((frame): frame is LogisterStackFrame => frame !== undefined);
+
+  return frames.length > 0 ? frames : undefined;
+}
+
+function normalizeBacktrace(stack: string | undefined): string[] | undefined {
+  if (!stack) return undefined;
+
+  const lines = stack
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .slice(1);
+
+  return lines.length > 0 ? lines : undefined;
+}
+
+function parseStackFrame(line: string): LogisterStackFrame | undefined {
+  const chromeWithMethod = /^at (?<name>.+?) \((?<filename>.+?):(?<lineno>\d+):(?<colno>\d+)\)$/u.exec(line);
+  if (chromeWithMethod?.groups) {
+    return {
+      name: chromeWithMethod.groups.name,
+      filename: chromeWithMethod.groups.filename,
+      lineno: Number(chromeWithMethod.groups.lineno),
+      colno: Number(chromeWithMethod.groups.colno)
+    };
+  }
+
+  const chromeNoMethod = /^at (?<filename>.+?):(?<lineno>\d+):(?<colno>\d+)$/u.exec(line);
+  if (chromeNoMethod?.groups) {
+    return {
+      filename: chromeNoMethod.groups.filename,
+      lineno: Number(chromeNoMethod.groups.lineno),
+      colno: Number(chromeNoMethod.groups.colno)
+    };
+  }
+
+  const firefox = /^(?<name>[^@]+)@(?<filename>.+?):(?<lineno>\d+):(?<colno>\d+)$/u.exec(line);
+  if (firefox?.groups) {
+    return {
+      name: firefox.groups.name,
+      filename: firefox.groups.filename,
+      lineno: Number(firefox.groups.lineno),
+      colno: Number(firefox.groups.colno)
+    };
+  }
+
+  return undefined;
 }
 
 function compact<T extends Record<string, unknown>>(value: T): T {
