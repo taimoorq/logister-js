@@ -31,6 +31,7 @@ describe("LogisterClient", () => {
     });
     const error = new Error("BROKEN");
     error.name = "TypeError";
+    error.cause = new Error("root cause");
     error.stack = [
       "TypeError: BROKEN",
       "    at renderCheckout (https://app.example.com/assets/app.min.js:2:1450)",
@@ -42,6 +43,8 @@ describe("LogisterClient", () => {
     const payload = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
     expect(payload.event.context.exception.class).toBe("TypeError");
     expect(payload.event.context.exception.message).toBe("BROKEN");
+    expect(payload.event.context.exception.cause.class).toBe("Error");
+    expect(payload.event.context.exception.cause.message).toBe("root cause");
     expect(payload.event.context.exception.backtrace).toEqual([
       "at renderCheckout (https://app.example.com/assets/app.min.js:2:1450)",
       "at onSubmit (https://app.example.com/assets/app.min.js:9:321)"

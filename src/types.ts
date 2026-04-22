@@ -19,10 +19,13 @@ export interface LogisterStackFrame {
 export interface LogisterExceptionContext extends LogisterContext {
   class: string;
   message: string;
+  qualified_class?: string | undefined;
   stack?: string | undefined;
   backtrace?: string[] | undefined;
   frames?: LogisterStackFrame[] | undefined;
-  cause?: unknown;
+  cause?: LogisterContext | undefined;
+  context?: LogisterContext | undefined;
+  raw?: unknown;
 }
 
 export interface LogisterEventPayload {
@@ -54,6 +57,7 @@ export interface LogisterClientOptions {
 
 export interface CaptureOptions {
   level?: LogisterLevel | undefined;
+  message?: string | undefined;
   fingerprint?: string | undefined;
   occurredAt?: string | Date | undefined;
   context?: LogisterContext | undefined;

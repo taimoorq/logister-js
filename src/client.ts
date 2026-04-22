@@ -52,7 +52,7 @@ export class LogisterClient {
     return this.sendEvent(compact({
       event_type: "error" as const,
       level: options.level ?? "error",
-      message: extractMessage(normalized),
+      message: options.message ?? extractMessage(normalized),
       fingerprint: options.fingerprint,
       occurred_at: normalizeTimestamp(options.occurredAt) ?? new Date().toISOString(),
       context: {
@@ -150,17 +150,13 @@ function normalizeError(error: unknown): LogisterExceptionContext {
     const stack = error.stack;
     return compact({
       class: error.name,
+      qualified_class: error.name,
       message: error.message,
       stack,
       frames: normalizeStackFrames(stack),
       backtrace: normalizeBacktrace(stack),
-      cause: error.cause instanceof Error
-        ? compact({
-            class: error.cause.name,
-            message: error.cause.message,
-            stack: error.cause.stack
-          })
-        : error.cause
+      cause: normalizeNestedError(error.cause),
+      context: normalizeNestedError("errors" in error ? (error as { errors?: unknown }).errors : undefined)
     });
   }
 
@@ -173,6 +169,37 @@ function normalizeError(error: unknown): LogisterExceptionContext {
     message: "Unknown error",
     raw: error
   });
+}
+
+function normalizeNestedError(error: unknown, depth = 0): LogisterContext | undefined {
+  if (error === undefined || error === null || depth >= 3) return undefined;
+
+  if (error instanceof Error) {
+    return compact({
+      class: error.name,
+      qualified_class: error.name,
+      message: error.message,
+      stack: error.stack,
+      frames: normalizeStackFrames(error.stack),
+      backtrace: normalizeBacktrace(error.stack),
+      cause: normalizeNestedError(error.cause, depth + 1)
+    });
+  }
+
+  if (Array.isArray(error)) {
+    const normalized = error.map((entry) => normalizeNestedError(entry, depth + 1) ?? serializeUnknown(entry));
+    return normalized.length > 0 ? { values: normalized } : undefined;
+  }
+
+  if (typeof error === "string") {
+    return { message: error };
+  }
+
+  if (typeof error === "object") {
+    return { raw: serializeUnknown(error) };
+  }
+
+  return { raw: error };
 }
 
 function extractMessage(error: LogisterContext): string {
@@ -243,6 +270,19 @@ function parseStackFrame(line: string): LogisterStackFrame | undefined {
   }
 
   return undefined;
+}
+
+function serializeUnknown(value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
+  if (Array.isArray(value)) return value.map((entry) => serializeUnknown(entry));
+  if (typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, entry]) => [key, serializeUnknown(entry)])
+    );
+  }
+
+  return String(value);
 }
 
 function compact<T extends Record<string, unknown>>(value: T): T {

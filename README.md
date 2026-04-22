@@ -108,6 +108,32 @@ What this gives you by default:
 - adopted or generated request IDs
 - request context you can reuse in custom logs and metrics
 
+## Console logging
+
+```ts
+import { LogisterClient } from "logister-js";
+import { instrumentConsole } from "logister-js/console";
+
+const client = new LogisterClient({
+  apiKey: process.env.LOGISTER_API_KEY ?? "",
+  baseUrl: process.env.LOGISTER_BASE_URL ?? "https://logister.org"
+});
+
+const restoreConsole = instrumentConsole(client, {
+  context: { service: "worker" }
+});
+
+console.warn("Queue backlog rising", { queue: "emails" });
+
+restoreConsole();
+```
+
+What this records:
+
+- `console.debug/info/log/warn/error` as Logister `log` events
+- `console.error()` calls that include an `Error` object as Logister `error` events
+- console method metadata plus serialized arguments in event context
+
 Recommended middleware order:
 
 1. `createLogisterMiddleware()` near the top of the stack
@@ -139,6 +165,8 @@ await client.captureException(new Error("Boom"), {
   context: getNodeRuntimeContext({ service: "worker" })
 });
 ```
+
+`captureException()` now includes structured stack frames plus chained causes when JavaScript errors use `cause`.
 
 ## Environment variables
 

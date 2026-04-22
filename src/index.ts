@@ -1,4 +1,5 @@
 export { LogisterClient } from "./client";
+export { instrumentConsole } from "./console";
 export type {
   CaptureOptions,
   CheckInOptions,

@@ -45,6 +45,11 @@
       "import": "./dist/express.js",
       "require": "./dist/express.cjs"
     },
+    "./console": {
+      "types": "./dist/console.d.ts",
+      "import": "./dist/console.js",
+      "require": "./dist/console.cjs"
+    },
     "./package.json": "./package.json"
   },
   "files": [
