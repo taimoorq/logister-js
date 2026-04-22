@@ -2,6 +2,23 @@
 
 All notable changes to `logister-js` will be documented in this file.
 
+## v0.2.0 - 2026-04-22
+
+### Added
+
+- Native console capture via `instrumentConsole()` and the `logister-js/console` entrypoint.
+- Richer JavaScript exception normalization including chained causes and structured nested error context.
+- Expanded README and integration guidance for Express, console capture, and richer JavaScript error payloads.
+
+### Changed
+
+- Updated the default SDK user agent and package version for the new release.
+- Broadened the JavaScript SDK positioning from base client only to a fuller Node/TypeScript operational path.
+
+### Fixed
+
+- Allowed `captureException()` callers to override the event message so wrapped operational errors can keep the intended headline.
+
 ## v0.1.0 - 2026-04-21
 
 ### Added
