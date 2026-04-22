@@ -2,6 +2,11 @@
 
 JavaScript and TypeScript SDK for sending errors, logs, metrics, transactions, and check-ins to Logister.
 
+Use this package when you want a Node or TypeScript app to send telemetry into the Logister backend.
+
+- Main Logister app: https://github.com/taimoorq/logister
+- JavaScript integration docs: https://docs.logister.org/integrations/javascript/
+
 This package is designed for Node.js runtimes first, with Express and other framework integrations layered on top.
 
 ## Status
@@ -186,6 +191,7 @@ Recommended rollout:
 ## Documentation
 
 - Product docs: https://docs.logister.org/
+- JavaScript integration: https://docs.logister.org/integrations/javascript/
 - HTTP API reference: https://docs.logister.org/http-api/
 - Ruby integration: https://docs.logister.org/integrations/ruby/
 - CFML integration: https://docs.logister.org/integrations/cfml/
