@@ -10,6 +10,12 @@ Use this package when you want a Node, TypeScript, or server-side JavaScript app
 - JavaScript integration docs: https://docs.logister.org/integrations/javascript/
 - npm package: https://www.npmjs.com/package/logister-js
 
+## Package links
+
+- npm package: https://www.npmjs.com/package/logister-js
+- GitHub repo: https://github.com/taimoorq/logister-js
+- Integration docs: https://docs.logister.org/integrations/javascript/
+
 This package is designed for Node.js runtimes first, especially the kinds of JavaScript projects that mix HTTP handlers, background jobs, console output, and custom operational code.
 
 ## Status
@@ -31,6 +37,8 @@ Use `logister-js` when you want a published npm package that drops into Node and
 - console capture for scripts, workers, and operational services
 - shared custom metrics, logs, transactions, and check-ins
 
+The npm package is the canonical distribution for JavaScript users. `npm`, `yarn`, `pnpm`, and `bun` all consume the same published package.
+
 ## Install From npm
 
 ```bash
@@ -50,6 +58,13 @@ bun add logister-js
 ```
 
 Package registry: https://www.npmjs.com/package/logister-js
+
+Why install from npm:
+
+- versioned package installs instead of copying code from GitHub
+- standard dependency resolution for `npm`, `yarn`, `pnpm`, and `bun`
+- package metadata, release history, and install commands in one place
+- provenance-enabled publishes configured in this repo
 
 ## Quick start
 
