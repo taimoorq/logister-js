@@ -2,10 +2,13 @@
 
 JavaScript and TypeScript SDK for sending errors, logs, metrics, transactions, and check-ins to Logister.
 
+Install it from npm as `logister-js`.
+
 Use this package when you want a Node, TypeScript, or server-side JavaScript app to send telemetry into the Logister backend.
 
 - Main Logister app: https://github.com/taimoorq/logister
 - JavaScript integration docs: https://docs.logister.org/integrations/javascript/
+- npm package: https://www.npmjs.com/package/logister-js
 
 This package is designed for Node.js runtimes first, especially the kinds of JavaScript projects that mix HTTP handlers, background jobs, console output, and custom operational code.
 
@@ -18,7 +21,17 @@ Current framework roadmap:
 
 - Express integration plan: ./docs/express-integration-plan.md
 
-## Install
+## What This Package Is For
+
+Use `logister-js` when you want a published npm package that drops into Node and TypeScript services for:
+
+- request and job visibility in server-side JavaScript
+- uncaught exception reporting with structured stack frames
+- Express middleware and error handling
+- console capture for scripts, workers, and operational services
+- shared custom metrics, logs, transactions, and check-ins
+
+## Install From npm
 
 ```bash
 npm install logister-js
@@ -35,6 +48,8 @@ pnpm add logister-js
 ```bash
 bun add logister-js
 ```
+
+Package registry: https://www.npmjs.com/package/logister-js
 
 ## Quick start
 
