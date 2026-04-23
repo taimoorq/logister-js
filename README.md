@@ -16,12 +16,26 @@ Use this package when you want a Node, TypeScript, or server-side JavaScript app
 - GitHub repo: https://github.com/taimoorq/logister-js
 - Integration docs: https://docs.logister.org/integrations/javascript/
 
+## Table Of Contents
+
+- [What This Package Is For](#what-this-package-is-for)
+- [Install From npm](#install-from-npm)
+- [Quick start](#quick-start)
+- [Express quick start](#express-quick-start)
+- [Console logging](#console-logging)
+- [Core API](#core-api)
+- [Node helpers](#node-helpers)
+- [Environment variables](#environment-variables)
+- [Development](#development)
+- [Publishing](#publishing)
+- [Documentation](#documentation)
+
 This package is designed for Node.js runtimes first, especially the kinds of JavaScript projects that mix HTTP handlers, background jobs, console output, and custom operational code.
 
 ## Status
 
-`logister-js` is an initial SDK scaffold focused on a clean publishable package shape and a base HTTP client.
-Framework-specific integrations like Express, NestJS, and Next.js server-side support can build on top of this package.
+`logister-js` is a published npm package with a shared client, Express integration, console capture, structured exception reporting, and Node runtime helpers.
+Framework-specific integrations like NestJS and Next.js server-side support can build on top of the package shape that is already in place.
 
 Current framework roadmap:
 
