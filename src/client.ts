@@ -33,7 +33,7 @@ export class LogisterClient {
     this.environment = options.environment;
     this.release = options.release;
     this.fetchImpl = options.fetch ?? fetch;
-    this.userAgent = options.userAgent ?? "logister-js/0.2.1";
+    this.userAgent = options.userAgent ?? "logister-js/0.2.2";
   }
 
   async sendEvent(payload: LogisterEventPayload): Promise<Response> {
@@ -55,10 +55,10 @@ export class LogisterClient {
       message: options.message ?? extractMessage(normalized),
       fingerprint: options.fingerprint,
       occurred_at: normalizeTimestamp(options.occurredAt) ?? new Date().toISOString(),
-      context: {
+      context: this.withCaptureContext({
         ...options.context,
         exception: normalized
-      }
+      }, options)
     }));
   }
 
@@ -69,7 +69,7 @@ export class LogisterClient {
       message,
       fingerprint: options.fingerprint,
       occurred_at: normalizeTimestamp(options.occurredAt) ?? new Date().toISOString(),
-      context: options.context
+      context: this.withCaptureContext(options.context, options)
     }));
   }
 
@@ -81,7 +81,12 @@ export class LogisterClient {
       fingerprint: options.fingerprint,
       occurred_at: normalizeTimestamp(options.occurredAt) ?? new Date().toISOString(),
       context: compact({
-        ...options.context,
+        ...this.withCaptureContext(options.context, options),
+        metric: options.context?.metric ?? compact({
+          name,
+          value,
+          unit: options.unit
+        }),
         value,
         unit: options.unit
       })
@@ -95,11 +100,11 @@ export class LogisterClient {
       message: name,
       fingerprint: options.fingerprint,
       occurred_at: normalizeTimestamp(options.occurredAt) ?? new Date().toISOString(),
-      context: {
+      context: this.withCaptureContext({
         ...options.context,
         transaction_name: name,
         duration_ms: durationMs
-      }
+      }, options)
     }));
   }
 
@@ -109,8 +114,12 @@ export class LogisterClient {
         slug,
         status,
         environment: options.environment ?? this.environment,
+        release: options.release ?? this.release,
         duration_ms: options.durationMs,
         checked_at: normalizeTimestamp(options.checkedAt) ?? new Date().toISOString(),
+        expected_interval_seconds: options.expectedIntervalSeconds,
+        trace_id: options.traceId,
+        request_id: options.requestId,
         context: this.withDefaultContext(options.context)
       })
     });
@@ -139,6 +148,23 @@ export class LogisterClient {
       ...context,
       environment: context?.environment ?? this.environment,
       release: context?.release ?? this.release
+    });
+
+    return Object.keys(merged).length > 0 ? merged : undefined;
+  }
+
+  private withCaptureContext(
+    context: LogisterContext | undefined,
+    options: CaptureOptions
+  ): LogisterContext | undefined {
+    const merged = compact({
+      ...context,
+      environment: context?.environment ?? options.environment,
+      release: context?.release ?? options.release,
+      trace_id: context?.trace_id ?? options.traceId,
+      request_id: context?.request_id ?? options.requestId,
+      session_id: context?.session_id ?? options.sessionId,
+      user_id: context?.user_id ?? options.userId
     });
 
     return Object.keys(merged).length > 0 ? merged : undefined;

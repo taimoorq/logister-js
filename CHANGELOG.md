@@ -2,6 +2,14 @@
 
 All notable changes to `logister-js` will be documented in this file.
 
+## v0.2.2 - 2026-05-21
+
+### Added
+
+- Added per-event environment, release, trace ID, request ID, session ID, and user ID options to capture calls.
+- Added release, expected interval, trace ID, and request ID fields to check-in payloads.
+- Added structured metric context alongside the existing value/unit fields for metric captures.
+
 ## v0.2.1 - 2026-04-22
 
 ### Fixed

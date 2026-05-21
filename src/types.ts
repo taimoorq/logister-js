@@ -41,8 +41,12 @@ export interface LogisterCheckInPayload {
   slug: string;
   status: "ok" | "error" | "in_progress";
   environment?: string | undefined;
+  release?: string | undefined;
   duration_ms?: number | undefined;
   checked_at?: string | undefined;
+  expected_interval_seconds?: number | undefined;
+  trace_id?: string | undefined;
+  request_id?: string | undefined;
   context?: LogisterContext | undefined;
 }
 
@@ -60,6 +64,12 @@ export interface CaptureOptions {
   message?: string | undefined;
   fingerprint?: string | undefined;
   occurredAt?: string | Date | undefined;
+  environment?: string | undefined;
+  release?: string | undefined;
+  traceId?: string | undefined;
+  requestId?: string | undefined;
+  sessionId?: string | undefined;
+  userId?: string | undefined;
   context?: LogisterContext | undefined;
 }
 
@@ -69,7 +79,11 @@ export interface MetricOptions extends CaptureOptions {
 
 export interface CheckInOptions {
   environment?: string | undefined;
+  release?: string | undefined;
   durationMs?: number | undefined;
   checkedAt?: string | Date | undefined;
+  expectedIntervalSeconds?: number | undefined;
+  traceId?: string | undefined;
+  requestId?: string | undefined;
   context?: LogisterContext | undefined;
 }

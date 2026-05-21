@@ -64,4 +64,68 @@ describe("LogisterClient", () => {
       }
     ]);
   });
+
+  it("captures metrics with metric context and per-event routing fields", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const client = new LogisterClient({
+      apiKey: "test-token",
+      baseUrl: "https://logister.example",
+      environment: "production",
+      release: "web@1.2.3",
+      fetch: fetchMock as unknown as typeof fetch
+    });
+
+    await client.captureMetric("queue.depth", 12, {
+      unit: "jobs",
+      traceId: "trace-123",
+      requestId: "req-123"
+    });
+
+    const payload = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(payload.event.event_type).toBe("metric");
+    expect(payload.event.context.metric).toEqual({
+      name: "queue.depth",
+      value: 12,
+      unit: "jobs"
+    });
+    expect(payload.event.context.value).toBe(12);
+    expect(payload.event.context.unit).toBe("jobs");
+    expect(payload.event.context.environment).toBe("production");
+    expect(payload.event.context.release).toBe("web@1.2.3");
+    expect(payload.event.context.trace_id).toBe("trace-123");
+    expect(payload.event.context.request_id).toBe("req-123");
+  });
+
+  it("posts check-ins with release and monitor metadata", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const client = new LogisterClient({
+      apiKey: "test-token",
+      baseUrl: "https://logister.example",
+      environment: "production",
+      release: "worker@1.2.3",
+      fetch: fetchMock as unknown as typeof fetch
+    });
+
+    await client.checkIn("nightly-import", "ok", {
+      durationMs: 88.5,
+      expectedIntervalSeconds: 600,
+      traceId: "trace-456",
+      requestId: "req-456"
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://logister.example/api/v1/check_ins",
+      expect.objectContaining({ method: "POST" })
+    );
+    const payload = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(payload.check_in.slug).toBe("nightly-import");
+    expect(payload.check_in.status).toBe("ok");
+    expect(payload.check_in.environment).toBe("production");
+    expect(payload.check_in.release).toBe("worker@1.2.3");
+    expect(payload.check_in.duration_ms).toBe(88.5);
+    expect(payload.check_in.expected_interval_seconds).toBe(600);
+    expect(payload.check_in.trace_id).toBe("trace-456");
+    expect(payload.check_in.request_id).toBe("req-456");
+    expect(payload.check_in.context.release).toBe("worker@1.2.3");
+  });
 });
