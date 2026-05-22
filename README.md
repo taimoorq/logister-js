@@ -1,6 +1,6 @@
 # logister-js
 
-JavaScript and TypeScript SDK for sending errors, logs, metrics, transactions, and check-ins to Logister.
+JavaScript and TypeScript SDK for sending errors, logs, metrics, transactions, spans, and check-ins to Logister.
 
 Install it from npm as `logister-js`.
 
@@ -53,7 +53,7 @@ Use `logister-js` when you want a published npm package that drops into Node and
 - uncaught exception reporting with structured stack frames
 - Express middleware and error handling
 - console capture for scripts, workers, and operational services
-- shared custom metrics, logs, transactions, and check-ins
+- shared custom metrics, logs, transactions, spans, and check-ins
 
 The npm package is the canonical distribution for JavaScript users. `npm`, `yarn`, `pnpm`, and `bun` all consume the same published package.
 
@@ -123,7 +123,7 @@ const logister = new LogisterClient({
   release: process.env.LOGISTER_RELEASE
 });
 
-app.use(createLogisterMiddleware({ client: logister }));
+app.use(createLogisterMiddleware({ client: logister, captureRequestSpans: true }));
 
 app.get("/orders/:id", async (req, res) => {
   const context = getLogisterRequestContext(req);
@@ -157,6 +157,7 @@ What this gives you by default:
 
 - uncaught Express route errors sent as Logister `error` events
 - completed requests sent as Logister `transaction` events
+- optional completed-request `server` spans for request load waterfall charts
 - adopted or generated request IDs
 - request context you can reuse in custom logs and metrics
 
@@ -201,10 +202,29 @@ Recommended middleware order:
 - `captureMessage(message, options)`
 - `captureMetric(name, value, options)`
 - `captureTransaction(name, durationMs, options)`
+- `captureSpan(name, durationMs, options)`
 - `checkIn(slug, status, options)`
 - `sendEvent(payload)`
 
-Capture options support per-event `environment`, `release`, `traceId`, `requestId`, `sessionId`, and `userId`. Metric options also accept `unit`; check-in options accept `release`, `durationMs`, `expectedIntervalSeconds`, `traceId`, and `requestId`.
+Capture options support per-event `environment`, `release`, `traceId`, `requestId`, `sessionId`, and `userId`. Metric options also accept `unit`; span options add `spanId`, `parentSpanId`, `kind`, `status`, `startedAt`, and `endedAt`; check-in options accept `release`, `durationMs`, `expectedIntervalSeconds`, `traceId`, and `requestId`.
+
+Browser apps can record navigation and resource timing with the browser entrypoint:
+
+```ts
+import { LogisterClient } from "logister-js";
+import { capturePageLoad } from "logister-js/browser";
+
+const client = new LogisterClient({
+  apiKey: window.LOGISTER_API_KEY,
+  baseUrl: "https://logister.org"
+});
+
+await capturePageLoad(client, {
+  route: window.location.pathname,
+  includeResources: true,
+  maxResources: 20
+});
+```
 
 ## Using project Insights beta
 
@@ -242,6 +262,16 @@ await logister.captureTransaction("POST /checkout", 182.4, {
   }
 });
 
+await logister.captureSpan("render checkout", 82.1, {
+  kind: "render",
+  status: "ok",
+  traceId: "trace_123",
+  parentSpanId: "span_root",
+  context: {
+    route: "POST /checkout"
+  }
+});
+
 await logister.captureMessage("payment provider retry", {
   level: "warn",
   context: {
@@ -265,8 +295,8 @@ Practical Insights recipes:
 
 - Release validation: set `LOGISTER_RELEASE`, then filter Insights to the new release and compare error count, transaction P95, and custom metrics.
 - Queue monitoring: report metrics such as `queue.depth`, `queue.latency`, `jobs.retry_count`, and `worker.active_jobs` with stable `queue` and `service` context keys.
-- Express performance triage: use request transactions from `createLogisterMiddleware()` and add matching `route`, `tenant_tier`, or `feature_flag` context to custom logs and metrics.
-- Instrumentation audit: open Insights after deploy and confirm errors, logs, metrics, transactions, and check-ins all appear in the recent stream.
+- Express performance triage: enable `captureRequestSpans` in `createLogisterMiddleware()` to feed request load waterfall charts, then add matching `route`, `tenant_tier`, or `feature_flag` context to custom logs and metrics.
+- Instrumentation audit: open Insights after deploy and confirm errors, logs, metrics, transactions, spans, and check-ins all appear in the recent stream.
 
 Keep custom attributes stable and low-cardinality. Good top-level context keys include `service`, `region`, `queue`, `route`, `tenant_tier`, `provider`, and `feature_flag`. Avoid raw IDs, emails, request bodies, SQL text, and per-user values as Insights dimensions.
 

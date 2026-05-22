@@ -4,6 +4,7 @@ export type LogisterEventType =
   | "error"
   | "metric"
   | "transaction"
+  | "span"
   | "log"
   | "check_in";
 
@@ -75,6 +76,17 @@ export interface CaptureOptions {
 
 export interface MetricOptions extends CaptureOptions {
   unit?: string | undefined;
+}
+
+export interface SpanOptions extends CaptureOptions {
+  traceId?: string | undefined;
+  requestId?: string | undefined;
+  spanId?: string | undefined;
+  parentSpanId?: string | undefined;
+  kind?: "app" | "browser" | "cache" | "db" | "http" | "internal" | "queue" | "render" | "resource" | "server" | string | undefined;
+  status?: "ok" | "error" | string | undefined;
+  startedAt?: string | Date | undefined;
+  endedAt?: string | Date | undefined;
 }
 
 export interface CheckInOptions {

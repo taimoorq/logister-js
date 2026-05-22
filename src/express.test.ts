@@ -47,6 +47,35 @@ describe("Express integration", () => {
     expect(payload.event.context.http.status_code).toBe(200);
   });
 
+  it("can capture request timing as a server span without transactions", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const client = buildClient(fetchMock);
+    const app = express();
+
+    app.use(createLogisterMiddleware({ client, captureTransactions: false, captureRequestSpans: true }));
+    app.get("/orders/:id", (_req, res) => {
+      res.status(204).end();
+    });
+
+    await request(app)
+      .get("/orders/42")
+      .set("X-Request-Id", "req-123")
+      .set("X-Trace-Id", "trace-123")
+      .expect(204);
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const payload = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(payload.event.event_type).toBe("span");
+    expect(payload.event.kind).toBe("server");
+    expect(payload.event.status).toBe("ok");
+    expect(payload.event.trace_id).toBe("trace-123");
+    expect(payload.event.request_id).toBe("req-123");
+    expect(payload.event.context.request.route).toBe("/orders/:id");
+    expect(payload.event.context.http.status_code).toBe(204);
+  });
+
   it("captures uncaught route errors with request context", async () => {
     const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
     const client = buildClient(fetchMock);

@@ -7,7 +7,8 @@ import type {
   LogisterExceptionContext,
   LogisterEventPayload,
   LogisterStackFrame,
-  MetricOptions
+  MetricOptions,
+  SpanOptions
 } from "./types";
 
 const DEFAULT_INGEST_PATH = "/api/v1/ingest_events";
@@ -104,6 +105,44 @@ export class LogisterClient {
         ...options.context,
         transaction_name: name,
         duration_ms: durationMs
+      }, options)
+    }));
+  }
+
+  async captureSpan(name: string, durationMs: number, options: SpanOptions = {}): Promise<Response> {
+    const spanId = options.spanId ?? randomId(16);
+    const traceId = options.traceId ?? spanId;
+    const startedAt = normalizeTimestamp(options.startedAt) ?? new Date(Date.now() - Math.max(0, durationMs)).toISOString();
+
+    return this.sendEvent(compact({
+      event_type: "span" as const,
+      level: options.level ?? (options.status === "error" ? "error" : "info"),
+      message: name,
+      fingerprint: options.fingerprint,
+      occurred_at: normalizeTimestamp(options.occurredAt) ?? startedAt,
+      name,
+      trace_id: traceId,
+      request_id: options.requestId,
+      span_id: spanId,
+      parent_span_id: options.parentSpanId,
+      kind: options.kind ?? "internal",
+      status: options.status,
+      duration_ms: durationMs,
+      started_at: startedAt,
+      ended_at: normalizeTimestamp(options.endedAt),
+      context: this.withCaptureContext({
+        ...options.context,
+        name,
+        trace_id: traceId,
+        request_id: options.requestId,
+        span_id: spanId,
+        parent_span_id: options.parentSpanId,
+        span_kind: options.kind ?? "internal",
+        kind: options.kind ?? "internal",
+        status: options.status,
+        duration_ms: durationMs,
+        started_at: startedAt,
+        ended_at: normalizeTimestamp(options.endedAt)
       }, options)
     }));
   }
@@ -322,4 +361,14 @@ function serializeUnknown(value: unknown): unknown {
 
 function compact<T extends Record<string, unknown>>(value: T): T {
   return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) as T;
+}
+
+function randomId(bytes: number): string {
+  const cryptoRef = globalThis.crypto;
+  if (cryptoRef?.getRandomValues) {
+    const values = cryptoRef.getRandomValues(new Uint8Array(bytes));
+    return Array.from(values, (value) => value.toString(16).padStart(2, "0")).join("");
+  }
+
+  return `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`.slice(0, bytes * 2);
 }

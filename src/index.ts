@@ -1,4 +1,5 @@
 export { LogisterClient } from "./client";
+export { capturePageLoad } from "./browser";
 export { instrumentConsole } from "./console";
 export type {
   CaptureOptions,
@@ -11,5 +12,6 @@ export type {
   LogisterEventType,
   LogisterLevel,
   LogisterStackFrame,
-  MetricOptions
+  MetricOptions,
+  SpanOptions
 } from "./types";

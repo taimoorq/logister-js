@@ -19,11 +19,14 @@ export interface LogisterRequestContext {
   remoteIp?: string | undefined;
   userAgent?: string | undefined;
   startedAt: number;
+  traceId?: string | undefined;
+  spanId?: string | undefined;
 }
 
 export interface LogisterExpressOptions {
   client: LogisterClient;
   captureTransactions?: boolean | undefined;
+  captureRequestSpans?: boolean | undefined;
   captureErrors?: boolean | undefined;
   requestIdHeader?: string | undefined;
   headerAllowList?: string[] | undefined;
@@ -39,7 +42,7 @@ export function createLogisterMiddleware(options: LogisterExpressOptions): Reque
     const context = buildRequestContext(req, settings);
     setLogisterRequestContext(req, context);
 
-    if (settings.captureTransactions) {
+    if (settings.captureTransactions || settings.captureRequestSpans) {
       res.on("finish", () => {
         const latestContext = getLogisterRequestContext(req) ?? context;
         if (matchesIgnoredRoute(settings.ignoreRoutes, req, latestContext)) return;
@@ -47,14 +50,35 @@ export function createLogisterMiddleware(options: LogisterExpressOptions): Reque
         const transactionName = settings.transactionNamer?.(req, res) ?? defaultTransactionName(req, latestContext);
         const durationMs = Math.max(0, Date.now() - context.startedAt);
 
-        void settings.client.captureTransaction(transactionName, durationMs, {
-          context: {
-            request: serializeRequestContext(latestContext),
-            http: {
-              status_code: res.statusCode
+        if (settings.captureTransactions) {
+          void settings.client.captureTransaction(transactionName, durationMs, {
+            traceId: latestContext.traceId,
+            requestId: latestContext.requestId,
+            context: {
+              request: serializeRequestContext(latestContext),
+              http: {
+                status_code: res.statusCode
+              }
             }
-          }
-        });
+          });
+        }
+
+        if (settings.captureRequestSpans) {
+          void settings.client.captureSpan(transactionName, durationMs, {
+            kind: "server",
+            status: res.statusCode >= 500 ? "error" : "ok",
+            traceId: latestContext.traceId ?? latestContext.requestId,
+            requestId: latestContext.requestId,
+            spanId: latestContext.spanId,
+            context: {
+              route: transactionName,
+              request: serializeRequestContext(latestContext),
+              http: {
+                status_code: res.statusCode
+              }
+            }
+          });
+        }
       });
     }
 
@@ -118,6 +142,7 @@ export function getLogisterRequestContext(req: Request): LogisterRequestContext 
 interface NormalizedExpressOptions {
   client: LogisterClient;
   captureTransactions: boolean;
+  captureRequestSpans: boolean;
   captureErrors: boolean;
   requestIdHeader: string;
   headerAllowList: string[];
@@ -134,6 +159,7 @@ function withDefaults(options: LogisterExpressOptions): NormalizedExpressOptions
   return {
     client: options.client,
     captureTransactions: options.captureTransactions ?? true,
+    captureRequestSpans: options.captureRequestSpans ?? false,
     captureErrors: options.captureErrors ?? true,
     requestIdHeader: options.requestIdHeader?.toLowerCase() ?? "x-request-id",
     headerAllowList: (options.headerAllowList ?? ["user-agent", "x-request-id", "x-forwarded-for"]).map((value) => value.toLowerCase()),
@@ -145,9 +171,12 @@ function withDefaults(options: LogisterExpressOptions): NormalizedExpressOptions
 
 function buildRequestContext(req: Request, options: NormalizedExpressOptions): LogisterRequestContext {
   const requestId = headerValue(req, options.requestIdHeader) ?? randomUUID();
+  const traceId = traceIdFromHeaders(req) ?? requestId;
 
   return compact({
     requestId,
+    traceId,
+    spanId: randomUUID().replace(/-/g, "").slice(0, 16),
     method: req.method,
     url: req.originalUrl || req.url,
     path: req.path || req.url,
@@ -204,6 +233,8 @@ function matchesIgnoredRoute(ignoreRoutes: Array<string | RegExp>, req: Request,
 function serializeRequestContext(context: LogisterRequestContext): LogisterContext {
   return compact({
     request_id: context.requestId,
+    trace_id: context.traceId,
+    span_id: context.spanId,
     method: context.method,
     url: context.url,
     path: context.path,
@@ -213,6 +244,12 @@ function serializeRequestContext(context: LogisterRequestContext): LogisterConte
     remote_ip: context.remoteIp,
     user_agent: context.userAgent
   });
+}
+
+function traceIdFromHeaders(req: Request): string | undefined {
+  const traceparent = headerValue(req, "traceparent");
+  const traceparentTraceId = traceparent?.split("-")[1];
+  return traceparentTraceId || headerValue(req, "x-trace-id");
 }
 
 function currentStatusCode(res: Response): number {

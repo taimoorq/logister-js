@@ -128,4 +128,39 @@ describe("LogisterClient", () => {
     expect(payload.check_in.request_id).toBe("req-456");
     expect(payload.check_in.context.release).toBe("worker@1.2.3");
   });
+
+  it("captures spans with trace timing context", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 200 });
+    const client = new LogisterClient({
+      apiKey: "test-token",
+      baseUrl: "https://logister.example",
+      environment: "production",
+      release: "web@1.2.3",
+      fetch: fetchMock as unknown as typeof fetch
+    });
+
+    await client.captureSpan("GET /checkout", 245.7, {
+      kind: "server",
+      status: "ok",
+      traceId: "trace-123",
+      requestId: "req-123",
+      spanId: "span-root",
+      startedAt: "2026-05-22T12:00:00.000Z",
+      context: { route: "GET /checkout", timing_breakdown: { db: 40.2, render: 80 } }
+    });
+
+    const payload = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(payload.event.event_type).toBe("span");
+    expect(payload.event.message).toBe("GET /checkout");
+    expect(payload.event.trace_id).toBe("trace-123");
+    expect(payload.event.request_id).toBe("req-123");
+    expect(payload.event.span_id).toBe("span-root");
+    expect(payload.event.kind).toBe("server");
+    expect(payload.event.duration_ms).toBe(245.7);
+    expect(payload.event.context.environment).toBe("production");
+    expect(payload.event.context.release).toBe("web@1.2.3");
+    expect(payload.event.context.trace_id).toBe("trace-123");
+    expect(payload.event.context.span_kind).toBe("server");
+    expect(payload.event.context.timing_breakdown).toEqual({ db: 40.2, render: 80 });
+  });
 });

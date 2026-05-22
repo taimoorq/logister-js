@@ -1,7 +1,7 @@
 {
   "name": "logister-js",
   "version": "0.2.3",
-  "description": "JavaScript and TypeScript SDK for sending errors, logs, metrics, transactions, and check-ins to Logister.",
+  "description": "JavaScript and TypeScript SDK for sending errors, logs, metrics, transactions, spans, and check-ins to Logister.",
   "license": "MIT",
   "homepage": "https://docs.logister.org/",
   "repository": {
@@ -49,6 +49,11 @@
       "types": "./dist/console.d.ts",
       "import": "./dist/console.js",
       "require": "./dist/console.cjs"
+    },
+    "./browser": {
+      "types": "./dist/browser.d.ts",
+      "import": "./dist/browser.js",
+      "require": "./dist/browser.cjs"
     },
     "./package.json": "./package.json"
   },
