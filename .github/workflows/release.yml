@@ -8,14 +8,60 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
-  github-release:
+  release:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+          cache: npm
+
+      - name: Upgrade npm for trusted publishing
+        run: npm install --global npm@latest
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify tag matches package version
+        run: |
+          node <<'NODE'
+          const packageJson = require("./package.json");
+          const expectedTag = `v${packageJson.version}`;
+          const actualTag = process.env.GITHUB_REF_NAME;
+
+          if (actualTag !== expectedTag) {
+            console.error(`Tag ${actualTag} does not match package.json version ${expectedTag}.`);
+            process.exit(1);
+          }
+          NODE
+
+      - name: Run checks
+        run: npm run check
+
+      - name: Check npm package version
+        id: npm_package
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if npm view "logister-js@${version}" version >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "logister-js@${version} already exists on npm."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "logister-js@${version} is not published on npm yet."
+          fi
+
+      - name: Publish package with npm trusted publishing
+        if: steps.npm_package.outputs.exists != 'true'
+        run: npm publish --access public
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1

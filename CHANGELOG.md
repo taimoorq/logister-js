@@ -7,6 +7,7 @@ All notable changes to `logister-js` will be documented in this file.
 ### Added
 
 - Added README guidance for using JavaScript and TypeScript reports with the Logister project Insights beta, including practical metric, transaction, log, check-in, and custom attribute examples.
+- Consolidated tag releases so the npm package publishes first and the matching GitHub release is created or updated in the same workflow run.
 
 ## v0.2.2 - 2026-05-21
 
