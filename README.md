@@ -338,7 +338,7 @@ npm run check
 
 Publishing targets the npm registry. npm is the canonical registry consumed by npm, Yarn, pnpm, and Bun.
 
-GitHub releases and npm publishing now happen in the same tag workflow and are driven by `CHANGELOG.md` plus `config/release.yml`. A commit or merge to `main` runs CI only. Pushing a tag like `v0.2.3` runs checks, publishes the npm package if that version is not already on npm, and then creates or updates the matching GitHub release.
+GitHub releases and npm publishing now happen in the same tag workflow and are driven by `CHANGELOG.md` plus `config/release.yml`. A commit or merge to `main` runs CI only. Pushing a tag like `v0.2.4` runs checks, publishes the npm package if that version is not already on npm, and then creates or updates the matching GitHub release.
 
 ### Manual publish
 
@@ -365,7 +365,7 @@ Trusted publishing requires GitHub-hosted runners and npm CLI 11.5.1 or newer. T
 Recommended rollout:
 
 1. Configure the trusted publisher on npm.
-2. Push a `v0.2.3` tag and let GitHub Actions publish the package and GitHub release together.
+2. Push a `v0.2.4` tag and let GitHub Actions publish the package and GitHub release together.
 3. After the first successful publish, go to the package settings on npm and set publishing access to require 2FA and disallow tokens.
 
 ## Documentation

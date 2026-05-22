@@ -2,11 +2,16 @@
 
 All notable changes to `logister-js` will be documented in this file.
 
-## v0.2.3 - 2026-05-22
+## v0.2.4 - 2026-05-22
 
 ### Added
 
 - Added `captureSpan`, opt-in Express request spans, and browser page-load/resource span capture for request load waterfall charts.
+
+## v0.2.3 - 2026-05-22
+
+### Added
+
 - Added README guidance for using JavaScript and TypeScript reports with the Logister project Insights beta, including practical metric, transaction, log, check-in, and custom attribute examples.
 - Consolidated tag releases so the npm package publishes first and the matching GitHub release is created or updated in the same workflow run.
 
