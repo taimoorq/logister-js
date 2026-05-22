@@ -33,7 +33,7 @@ export class LogisterClient {
     this.environment = options.environment;
     this.release = options.release;
     this.fetchImpl = options.fetch ?? fetch;
-    this.userAgent = options.userAgent ?? "logister-js/0.2.2";
+    this.userAgent = options.userAgent ?? "logister-js/0.2.3";
   }
 
   async sendEvent(payload: LogisterEventPayload): Promise<Response> {

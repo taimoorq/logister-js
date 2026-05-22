@@ -8,6 +8,7 @@ Use this package when you want a Node, TypeScript, or server-side JavaScript app
 
 - Main Logister app: https://github.com/taimoorq/logister
 - JavaScript integration docs: https://docs.logister.org/integrations/javascript/
+- Insights beta guide: https://docs.logister.org/product/#insights-beta
 - npm package: https://www.npmjs.com/package/logister-js
 
 ## Package links
@@ -15,6 +16,7 @@ Use this package when you want a Node, TypeScript, or server-side JavaScript app
 - npm package: https://www.npmjs.com/package/logister-js
 - GitHub repo: https://github.com/taimoorq/logister-js
 - Integration docs: https://docs.logister.org/integrations/javascript/
+- Insights beta guide: https://docs.logister.org/product/#insights-beta
 
 ## Table Of Contents
 
@@ -24,6 +26,7 @@ Use this package when you want a Node, TypeScript, or server-side JavaScript app
 - [Express quick start](#express-quick-start)
 - [Console logging](#console-logging)
 - [Core API](#core-api)
+- [Using project Insights beta](#using-project-insights-beta)
 - [Node helpers](#node-helpers)
 - [Environment variables](#environment-variables)
 - [Development](#development)
@@ -202,6 +205,70 @@ Recommended middleware order:
 
 Capture options support per-event `environment`, `release`, `traceId`, `requestId`, `sessionId`, and `userId`. Metric options also accept `unit`; check-in options accept `release`, `durationMs`, `expectedIntervalSeconds`, `traceId`, and `requestId`.
 
+## Using project Insights beta
+
+The Logister project Insights tab combines Inbox, Activity, and Performance data into live dashboard views. Node and TypeScript services get the most useful Insights view when they send consistent `environment`, `release`, and stable top-level context attributes.
+
+Configure deployment context once, then attach low-cardinality dimensions to metrics, transactions, logs, and check-ins:
+
+```ts
+import { LogisterClient } from "logister-js";
+
+const logister = new LogisterClient({
+  apiKey: process.env.LOGISTER_API_KEY ?? "",
+  baseUrl: process.env.LOGISTER_BASE_URL ?? "https://logister.org",
+  environment: process.env.LOGISTER_ENVIRONMENT,
+  release: process.env.LOGISTER_RELEASE
+});
+
+await logister.captureMetric("queue.depth", 42, {
+  unit: "jobs",
+  context: {
+    service: "billing-worker",
+    queue: "billing",
+    region: "us-east-1",
+    tenant_tier: "enterprise"
+  }
+});
+
+await logister.captureTransaction("POST /checkout", 182.4, {
+  requestId: "req_123",
+  context: {
+    service: "billing-api",
+    route: "POST /checkout",
+    feature_flag: "new_checkout",
+    tenant_tier: "enterprise"
+  }
+});
+
+await logister.captureMessage("payment provider retry", {
+  level: "warn",
+  context: {
+    service: "billing-worker",
+    provider: "stripe",
+    queue: "billing"
+  }
+});
+
+await logister.checkIn("nightly-reconcile", "ok", {
+  expectedIntervalSeconds: 3600,
+  durationMs: 842.7,
+  context: {
+    service: "billing-worker",
+    queue: "reconcile"
+  }
+});
+```
+
+Practical Insights recipes:
+
+- Release validation: set `LOGISTER_RELEASE`, then filter Insights to the new release and compare error count, transaction P95, and custom metrics.
+- Queue monitoring: report metrics such as `queue.depth`, `queue.latency`, `jobs.retry_count`, and `worker.active_jobs` with stable `queue` and `service` context keys.
+- Express performance triage: use request transactions from `createLogisterMiddleware()` and add matching `route`, `tenant_tier`, or `feature_flag` context to custom logs and metrics.
+- Instrumentation audit: open Insights after deploy and confirm errors, logs, metrics, transactions, and check-ins all appear in the recent stream.
+
+Keep custom attributes stable and low-cardinality. Good top-level context keys include `service`, `region`, `queue`, `route`, `tenant_tier`, `provider`, and `feature_flag`. Avoid raw IDs, emails, request bodies, SQL text, and per-user values as Insights dimensions.
+
 ## Node helpers
 
 Use the Node helpers when you want runtime metadata without hand-building it into every event.
@@ -240,7 +307,7 @@ npm run check
 
 Publishing targets the npm registry. npm is the canonical registry consumed by npm, Yarn, pnpm, and Bun.
 
-GitHub releases are managed separately in this repo and are driven by `CHANGELOG.md` plus `config/release.yml`. A commit or merge to `main` runs CI only. Pushing a tag like `v0.2.2` will publish the npm package and create or update the matching GitHub release.
+GitHub releases are managed separately in this repo and are driven by `CHANGELOG.md` plus `config/release.yml`. A commit or merge to `main` runs CI only. Pushing a tag like `v0.2.3` will publish the npm package and create or update the matching GitHub release.
 
 ### Manual publish
 
@@ -267,13 +334,14 @@ Trusted publishing requires GitHub-hosted runners and npm CLI 11.5.1 or newer. T
 Recommended rollout:
 
 1. Configure the trusted publisher on npm.
-2. Push a `v0.2.2` tag and let GitHub Actions publish the package.
+2. Push a `v0.2.3` tag and let GitHub Actions publish the package.
 3. After the first successful publish, go to the package settings on npm and set publishing access to require 2FA and disallow tokens.
 
 ## Documentation
 
 - Product docs: https://docs.logister.org/
 - JavaScript integration: https://docs.logister.org/integrations/javascript/
+- Insights beta guide: https://docs.logister.org/product/#insights-beta
 - HTTP API reference: https://docs.logister.org/http-api/
 - Ruby integration: https://docs.logister.org/integrations/ruby/
 - CFML integration: https://docs.logister.org/integrations/cfml/
