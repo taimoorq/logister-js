@@ -15,6 +15,7 @@ Use this package when you want a Node, TypeScript, or server-side JavaScript app
 
 - npm package: https://www.npmjs.com/package/logister-js
 - GitHub repo: https://github.com/taimoorq/logister-js
+- GitHub releases: https://github.com/taimoorq/logister-js/releases
 - Integration docs: https://docs.logister.org/integrations/javascript/
 - Insights beta guide: https://docs.logister.org/product/#insights-beta
 
