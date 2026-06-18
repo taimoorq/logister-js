@@ -4,6 +4,7 @@ import type {
   LogisterCheckInPayload,
   LogisterClientOptions,
   LogisterContext,
+  LogisterDeploymentPayload,
   LogisterExceptionContext,
   LogisterEventPayload,
   LogisterStackFrame,
@@ -13,12 +14,17 @@ import type {
 
 const DEFAULT_INGEST_PATH = "/api/v1/ingest_events";
 const DEFAULT_CHECK_IN_PATH = "/api/v1/check_ins";
+const DEFAULT_DEPLOYMENT_PATH = "/api/v1/deployments";
 
 export class LogisterClient {
   private readonly apiKey: string;
   private readonly baseUrl: string;
   private readonly environment: string | undefined;
   private readonly release: string | undefined;
+  private readonly repository: string | undefined;
+  private readonly commitSha: string | undefined;
+  private readonly branch: string | undefined;
+  private readonly defaultContext: LogisterContext;
   private readonly fetchImpl: typeof fetch;
   private readonly userAgent: string;
 
@@ -33,8 +39,12 @@ export class LogisterClient {
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
     this.environment = options.environment;
     this.release = options.release;
+    this.repository = options.repository;
+    this.commitSha = options.commitSha;
+    this.branch = options.branch;
+    this.defaultContext = options.defaultContext ?? {};
     this.fetchImpl = options.fetch ?? fetch;
-    this.userAgent = options.userAgent ?? "logister-js/0.2.4";
+    this.userAgent = options.userAgent ?? "logister-js/0.2.5";
   }
 
   async sendEvent(payload: LogisterEventPayload): Promise<Response> {
@@ -164,6 +174,15 @@ export class LogisterClient {
     });
   }
 
+  async recordDeployment(deployment: LogisterDeploymentPayload): Promise<Response> {
+    return this.postJson(DEFAULT_DEPLOYMENT_PATH, {
+      deployment: normalizeDeploymentPayload(deployment, {
+        environment: this.environment,
+        branch: this.branch
+      })
+    });
+  }
+
   private async postJson(path: string, body: unknown): Promise<Response> {
     const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
       method: "POST",
@@ -184,9 +203,13 @@ export class LogisterClient {
 
   private withDefaultContext(context: LogisterContext | undefined): LogisterContext | undefined {
     const merged = compact({
+      ...this.defaultContext,
       ...context,
-      environment: context?.environment ?? this.environment,
-      release: context?.release ?? this.release
+      environment: context?.environment ?? this.defaultContext.environment ?? this.environment,
+      release: context?.release ?? this.defaultContext.release ?? this.release,
+      repository: context?.repository ?? this.defaultContext.repository ?? this.repository,
+      commit_sha: context?.commit_sha ?? this.defaultContext.commit_sha ?? this.commitSha,
+      branch: context?.branch ?? this.defaultContext.branch ?? this.branch
     });
 
     return Object.keys(merged).length > 0 ? merged : undefined;
@@ -208,6 +231,27 @@ export class LogisterClient {
 
     return Object.keys(merged).length > 0 ? merged : undefined;
   }
+}
+
+function normalizeDeploymentPayload(
+  deployment: LogisterDeploymentPayload,
+  defaults: Pick<LogisterDeploymentPayload, "environment" | "branch">
+): Record<string, unknown> {
+  return compact({
+    release: deployment.release,
+    environment: deployment.environment ?? defaults.environment,
+    repository: deployment.repository,
+    commit_sha: deployment.commitSha,
+    branch: deployment.branch ?? defaults.branch,
+    deployed_at: normalizeTimestamp(deployment.deployedAt),
+    pull_request_number: deployment.pullRequestNumber,
+    pull_request_url: deployment.pullRequestUrl,
+    release_tag: deployment.releaseTag,
+    release_url: deployment.releaseUrl,
+    compare_url: deployment.compareUrl,
+    workflow_run_url: deployment.workflowRunUrl,
+    deployment_url: deployment.deploymentUrl
+  });
 }
 
 function normalizeError(error: unknown): LogisterExceptionContext {

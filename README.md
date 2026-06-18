@@ -300,6 +300,38 @@ Practical Insights recipes:
 
 Keep custom attributes stable and low-cardinality. Good top-level context keys include `service`, `region`, `queue`, `route`, `tenant_tier`, `provider`, and `feature_flag`. Avoid raw IDs, emails, request bodies, SQL text, and per-user values as Insights dimensions.
 
+## GitHub source context and deployments
+
+When a Logister project is connected to a GitHub repository, send source context so stack frames and releases can resolve to the exact commit:
+
+```ts
+const logister = new LogisterClient({
+  apiKey: process.env.LOGISTER_API_KEY ?? "",
+  baseUrl: process.env.LOGISTER_BASE_URL ?? "https://logister.org",
+  environment: process.env.LOGISTER_ENVIRONMENT,
+  release: process.env.LOGISTER_RELEASE,
+  repository: process.env.LOGISTER_REPOSITORY,
+  commitSha: process.env.LOGISTER_COMMIT_SHA ?? process.env.GITHUB_SHA,
+  branch: process.env.LOGISTER_BRANCH ?? process.env.GITHUB_REF_NAME,
+  defaultContext: { service: "checkout-web" }
+});
+```
+
+CI/CD can also record the release-to-commit mapping directly:
+
+```ts
+await logister.recordDeployment({
+  release: process.env.LOGISTER_RELEASE ?? "checkout@2026.06.18",
+  environment: process.env.LOGISTER_ENVIRONMENT ?? "production",
+  repository: process.env.LOGISTER_REPOSITORY ?? "acme/checkout",
+  commitSha: process.env.LOGISTER_COMMIT_SHA ?? process.env.GITHUB_SHA ?? "",
+  branch: process.env.LOGISTER_BRANCH ?? process.env.GITHUB_REF_NAME,
+  workflowRunUrl: process.env.GITHUB_RUN_ID
+    ? `https://github.com/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`
+    : undefined
+});
+```
+
 ## Node helpers
 
 Use the Node helpers when you want runtime metadata without hand-building it into every event.
@@ -326,6 +358,9 @@ await client.captureException(new Error("Boom"), {
 - `LOGISTER_BASE_URL`
 - `LOGISTER_ENVIRONMENT`
 - `LOGISTER_RELEASE`
+- `LOGISTER_REPOSITORY`
+- `LOGISTER_COMMIT_SHA`
+- `LOGISTER_BRANCH`
 
 ## Development
 
@@ -338,7 +373,7 @@ npm run check
 
 Publishing targets the npm registry. npm is the canonical registry consumed by npm, Yarn, pnpm, and Bun.
 
-GitHub releases and npm publishing now happen in the same tag workflow and are driven by `CHANGELOG.md` plus `config/release.yml`. A commit or merge to `main` runs CI only. Pushing a tag like `v0.2.4` runs checks, publishes the npm package if that version is not already on npm, and then creates or updates the matching GitHub release.
+GitHub releases and npm publishing now happen in the same tag workflow and are driven by `CHANGELOG.md` plus `config/release.yml`. After CI passes on `main`, the release-from-main workflow creates the matching version tag. Pushing a tag like `v0.2.5` runs checks, publishes the npm package if that version is not already on npm, and then creates or updates the matching GitHub release.
 
 ### Manual publish
 
@@ -365,7 +400,7 @@ Trusted publishing requires GitHub-hosted runners and npm CLI 11.5.1 or newer. T
 Recommended rollout:
 
 1. Configure the trusted publisher on npm.
-2. Push a `v0.2.4` tag and let GitHub Actions publish the package and GitHub release together.
+2. Merge the version bump to `main` or push a `v0.2.5` tag and let GitHub Actions publish the package and GitHub release together.
 3. After the first successful publish, go to the package settings on npm and set publishing access to require 2FA and disallow tokens.
 
 ## Documentation

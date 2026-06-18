@@ -8,6 +8,7 @@ export type {
   LogisterCheckInPayload,
   LogisterClientOptions,
   LogisterContext,
+  LogisterDeploymentPayload,
   LogisterEventPayload,
   LogisterEventType,
   LogisterLevel,

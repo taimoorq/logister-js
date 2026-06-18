@@ -2,6 +2,13 @@
 
 All notable changes to `logister-js` will be documented in this file.
 
+## v0.2.5 - 2026-06-18
+
+### Added
+
+- Added first-class source context fields (`repository`, `commitSha`, and `branch`) plus `defaultContext` to the client options.
+- Added `recordDeployment()` for posting release-to-commit deployment records to Logister.
+
 ## v0.2.4 - 2026-05-22
 
 ### Added

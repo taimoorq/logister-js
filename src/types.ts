@@ -56,6 +56,10 @@ export interface LogisterClientOptions {
   baseUrl: string;
   environment?: string | undefined;
   release?: string | undefined;
+  repository?: string | undefined;
+  commitSha?: string | undefined;
+  branch?: string | undefined;
+  defaultContext?: LogisterContext | undefined;
   fetch?: typeof fetch | undefined;
   userAgent?: string | undefined;
 }
@@ -72,6 +76,22 @@ export interface CaptureOptions {
   sessionId?: string | undefined;
   userId?: string | undefined;
   context?: LogisterContext | undefined;
+}
+
+export interface LogisterDeploymentPayload {
+  release: string;
+  repository: string;
+  commitSha: string;
+  environment?: string | undefined;
+  branch?: string | undefined;
+  deployedAt?: string | Date | undefined;
+  pullRequestNumber?: string | number | undefined;
+  pullRequestUrl?: string | undefined;
+  releaseTag?: string | undefined;
+  releaseUrl?: string | undefined;
+  compareUrl?: string | undefined;
+  workflowRunUrl?: string | undefined;
+  deploymentUrl?: string | undefined;
 }
 
 export interface MetricOptions extends CaptureOptions {

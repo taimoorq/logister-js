@@ -72,6 +72,10 @@ describe("LogisterClient", () => {
       baseUrl: "https://logister.example",
       environment: "production",
       release: "web@1.2.3",
+      repository: "acme/storefront",
+      commitSha: "abc1234",
+      branch: "main",
+      defaultContext: { service: "web" },
       fetch: fetchMock as unknown as typeof fetch
     });
 
@@ -92,8 +96,48 @@ describe("LogisterClient", () => {
     expect(payload.event.context.unit).toBe("jobs");
     expect(payload.event.context.environment).toBe("production");
     expect(payload.event.context.release).toBe("web@1.2.3");
+    expect(payload.event.context.repository).toBe("acme/storefront");
+    expect(payload.event.context.commit_sha).toBe("abc1234");
+    expect(payload.event.context.branch).toBe("main");
+    expect(payload.event.context.service).toBe("web");
     expect(payload.event.context.trace_id).toBe("trace-123");
     expect(payload.event.context.request_id).toBe("req-123");
+  });
+
+  it("posts deployment records to the deployment endpoint", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 201 });
+    const client = new LogisterClient({
+      apiKey: "test-token",
+      baseUrl: "https://logister.example",
+      environment: "production",
+      branch: "main",
+      fetch: fetchMock as unknown as typeof fetch
+    });
+
+    await client.recordDeployment({
+      release: "web@1.2.3",
+      repository: "acme/storefront",
+      commitSha: "abcdef123456",
+      deployedAt: new Date("2026-06-18T14:30:00Z"),
+      pullRequestNumber: 42,
+      workflowRunUrl: "https://github.com/acme/storefront/actions/runs/123"
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "https://logister.example/api/v1/deployments",
+      expect.objectContaining({ method: "POST" })
+    );
+    const payload = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(payload.deployment).toEqual({
+      release: "web@1.2.3",
+      environment: "production",
+      repository: "acme/storefront",
+      commit_sha: "abcdef123456",
+      branch: "main",
+      deployed_at: "2026-06-18T14:30:00.000Z",
+      pull_request_number: 42,
+      workflow_run_url: "https://github.com/acme/storefront/actions/runs/123"
+    });
   });
 
   it("posts check-ins with release and monitor metadata", async () => {
