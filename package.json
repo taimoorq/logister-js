@@ -1,6 +1,6 @@
 {
   "name": "logister-js",
-  "version": "0.2.5",
+  "version": "0.3.0",
   "description": "JavaScript and TypeScript SDK for sending errors, logs, metrics, transactions, spans, and check-ins to Logister.",
   "license": "MIT",
   "homepage": "https://docs.logister.org/",
@@ -24,7 +24,7 @@
   "type": "module",
   "sideEffects": false,
   "engines": {
-    "node": ">=18"
+    "node": ">=22"
   },
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -73,7 +73,8 @@
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "npm run typecheck && npm run test && npm run build",
+    "audit": "npm audit --audit-level=low",
+    "check": "npm run audit && npm run typecheck && npm run test && npm run build",
     "prepublishOnly": "npm run check"
   },
   "peerDependencies": {
@@ -82,12 +83,15 @@
   "devDependencies": {
     "@types/express": "^5.0.3",
     "@types/node": "^22.15.21",
-    "@types/supertest": "^6.0.3",
+    "@types/supertest": "^7.2.1",
     "express": "^5.1.0",
     "rimraf": "^6.0.1",
     "supertest": "^7.1.1",
     "tsup": "^8.5.0",
-    "typescript": "^5.8.3",
-    "vitest": "^3.1.2"
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.10"
+  },
+  "overrides": {
+    "esbuild": "0.28.1"
   }
 }

@@ -2,6 +2,18 @@
 
 All notable changes to `logister-js` will be documented in this file.
 
+## v0.3.0 - 2026-07-25
+
+### Changed
+
+- Raised the supported Node.js runtime from Node 18 to Node 22 and updated the package build target accordingly.
+- Updated the supported test and type tooling while keeping TypeScript on the latest compatible 5.9 release.
+
+### Security
+
+- Updated the development dependency graph to patched `brace-expansion` and `esbuild` releases.
+- Added an explicit npm audit gate to local checks, CI, and releases.
+
 ## v0.2.5 - 2026-06-18
 
 ### Added
