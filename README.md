@@ -1,49 +1,82 @@
 # logister-js
 
-JavaScript and TypeScript SDK for sending errors, logs, metrics, transactions, spans, and check-ins to Logister.
+JavaScript and TypeScript SDK for sending errors, logs, metrics, transactions, spans, and scheduled-job check-ins to Logister.
 
 Install it from npm as `logister-js`.
 
-Use this package when you want a Node, TypeScript, or server-side JavaScript app to send telemetry into the Logister backend.
+Use this package in Node.js services, TypeScript applications, Express servers, workers, and scripts. Browser timing capture is available through a separate entry point.
+
+Requires Node.js 22 or newer for Node-based applications and build tooling.
 
 - Main Logister app: https://github.com/taimoorq/logister
-- JavaScript integration docs: https://docs.logister.org/integrations/javascript/
-- Insights beta guide: https://docs.logister.org/product/#insights-beta
+- JavaScript integration docs: https://logister.org/docs/integrations/javascript/
+- Insights guide: https://logister.org/docs/product/#insights
 - npm package: https://www.npmjs.com/package/logister-js
+
+## Quick start
+
+Create a project in Logister and generate a project API key under **Project settings → API keys**.
+
+```bash
+npm install logister-js
+
+export LOGISTER_API_KEY="<project-api-key>"
+export LOGISTER_BASE_URL="https://logister.example.com"
+export LOGISTER_ENVIRONMENT="development"
+```
+
+Send a test error:
+
+```ts
+import { LogisterClient } from "logister-js";
+
+const client = new LogisterClient({
+  apiKey: process.env.LOGISTER_API_KEY ?? "",
+  baseUrl: process.env.LOGISTER_BASE_URL ?? "https://logister.example.com",
+  environment: process.env.LOGISTER_ENVIRONMENT,
+  defaultContext: { service: "checkout-api" }
+});
+
+await client.captureException(new Error("README test error"), {
+  fingerprint: "readme-test-error",
+  context: { component: "checkout" }
+});
+```
+
+Open the project inbox and confirm that **README test error** appears. A rejected promise with status `401` usually means the API key or base URL is wrong; use the [JavaScript integration guide](https://logister.org/docs/integrations/javascript/) for setup and troubleshooting.
 
 ## Package links
 
 - npm package: https://www.npmjs.com/package/logister-js
 - GitHub repo: https://github.com/taimoorq/logister-js
 - GitHub releases: https://github.com/taimoorq/logister-js/releases
-- Integration docs: https://docs.logister.org/integrations/javascript/
-- Insights beta guide: https://docs.logister.org/product/#insights-beta
+- Integration docs: https://logister.org/docs/integrations/javascript/
+- Insights guide: https://logister.org/docs/product/#insights
 
 ## Table Of Contents
 
+- [Quick start](#quick-start)
+- [Status](#status)
 - [What This Package Is For](#what-this-package-is-for)
 - [Install From npm](#install-from-npm)
-- [Quick start](#quick-start)
+- [Base client example](#base-client-example)
 - [Express quick start](#express-quick-start)
 - [Console logging](#console-logging)
 - [Core API](#core-api)
-- [Using project Insights beta](#using-project-insights-beta)
+- [Using project Insights](#using-project-insights)
+- [GitHub source context and deployments](#github-source-context-and-deployments)
 - [Node helpers](#node-helpers)
 - [Environment variables](#environment-variables)
 - [Development](#development)
 - [Publishing](#publishing)
 - [Documentation](#documentation)
 
-This package is designed for Node.js runtimes first, especially the kinds of JavaScript projects that mix HTTP handlers, background jobs, console output, and custom operational code.
+This package is Node-first and supports both ESM and CommonJS consumers.
 
 ## Status
 
 `logister-js` is a published npm package with a shared client, Express integration, console capture, structured exception reporting, and Node runtime helpers.
 Framework-specific integrations like NestJS and Next.js server-side support can build on top of the package shape that is already in place.
-
-Current framework roadmap:
-
-- Express integration plan: ./docs/express-integration-plan.md
 
 ## What This Package Is For
 
@@ -77,14 +110,7 @@ bun add logister-js
 
 Package registry: https://www.npmjs.com/package/logister-js
 
-Why install from npm:
-
-- versioned package installs instead of copying code from GitHub
-- standard dependency resolution for `npm`, `yarn`, `pnpm`, and `bun`
-- package metadata, release history, and install commands in one place
-- provenance-enabled publishes configured in this repo
-
-## Quick start
+## Base client example
 
 Use the base client when you want direct control from a script, worker, background job, or framework hook.
 
@@ -101,6 +127,8 @@ await client.captureMessage("SDK booted", {
   context: { runtime: "node" }
 });
 ```
+
+The client throws when Logister returns a non-2xx response, so failed delivery remains visible to your application. Decide at the call site whether to retry, log locally, or continue without telemetry.
 
 ## Express quick start
 
@@ -208,15 +236,21 @@ Recommended middleware order:
 
 Capture options support per-event `environment`, `release`, `traceId`, `requestId`, `sessionId`, and `userId`. Metric options also accept `unit`; span options add `spanId`, `parentSpanId`, `kind`, `status`, `startedAt`, and `endedAt`; check-in options accept `release`, `durationMs`, `expectedIntervalSeconds`, `traceId`, and `requestId`.
 
-Browser apps can record navigation and resource timing with the browser entrypoint:
+Browser apps can record navigation and resource timing with the browser entrypoint. A browser cannot keep an ingest key secret: anyone who can load the page can inspect and reuse it. Use a write-only project key only if that abuse risk is acceptable, or send browser telemetry through your own backend.
 
 ```ts
 import { LogisterClient } from "logister-js";
 import { capturePageLoad } from "logister-js/browser";
 
+const apiKey = document.querySelector<HTMLMetaElement>(
+  'meta[name="logister-ingest-key"]'
+)?.content;
+
+if (!apiKey) throw new Error("Missing Logister browser ingest key");
+
 const client = new LogisterClient({
-  apiKey: window.LOGISTER_API_KEY,
-  baseUrl: "https://logister.org"
+  apiKey,
+  baseUrl: "https://logister.example.com"
 });
 
 await capturePageLoad(client, {
@@ -226,7 +260,7 @@ await capturePageLoad(client, {
 });
 ```
 
-## Using project Insights beta
+## Using project Insights
 
 The Logister project Insights tab combines Inbox, Activity, and Performance data into live dashboard views. Node and TypeScript services get the most useful Insights view when they send consistent `environment`, `release`, and stable top-level context attributes.
 
@@ -365,15 +399,16 @@ await client.captureException(new Error("Boom"), {
 ## Development
 
 ```bash
-npm install
+npm ci
 npm run check
+npm pack --dry-run
 ```
 
 ## Publishing
 
 Publishing targets the npm registry. npm is the canonical registry consumed by npm, Yarn, pnpm, and Bun.
 
-GitHub releases and npm publishing now happen in the same tag workflow and are driven by `CHANGELOG.md` plus `config/release.yml`. After CI passes on `main`, the release-from-main workflow creates the matching version tag. Pushing a tag like `v0.2.5` runs checks, publishes the npm package if that version is not already on npm, and then creates or updates the matching GitHub release.
+`package.json` is the package version source of truth. Update it, `package-lock.json`, and `CHANGELOG.md` together. After CI passes on `main`, the release-from-main workflow creates the matching version tag. Pushing `vX.Y.Z` verifies tag/version parity, runs the full checks, publishes the missing npm version with trusted publishing, and only then creates or updates the GitHub Release.
 
 ### Manual publish
 
@@ -400,14 +435,23 @@ Trusted publishing requires GitHub-hosted runners and npm CLI 11.5.1 or newer. T
 Recommended rollout:
 
 1. Configure the trusted publisher on npm.
-2. Merge the version bump to `main` or push a `v0.2.5` tag and let GitHub Actions publish the package and GitHub release together.
+2. Merge the version bump to `main` or push a matching `vX.Y.Z` tag and let GitHub Actions publish the package and GitHub Release together.
 3. After the first successful publish, go to the package settings on npm and set publishing access to require 2FA and disallow tokens.
+
+npm versions are immutable. If a version has already been accepted, make corrections in a new patch version and do not move its tag.
+
+Verify both release surfaces:
+
+```bash
+npm view logister-js@X.Y.Z version engines --json
+gh release view vX.Y.Z
+```
 
 ## Documentation
 
-- Product docs: https://docs.logister.org/
-- JavaScript integration: https://docs.logister.org/integrations/javascript/
-- Insights beta guide: https://docs.logister.org/product/#insights-beta
-- HTTP API reference: https://docs.logister.org/http-api/
-- Ruby integration: https://docs.logister.org/integrations/ruby/
-- CFML integration: https://docs.logister.org/integrations/cfml/
+- Product docs: https://logister.org/docs/
+- JavaScript integration: https://logister.org/docs/integrations/javascript/
+- Insights guide: https://logister.org/docs/product/#insights
+- HTTP API reference: https://logister.org/docs/http-api/
+- Ruby integration: https://logister.org/docs/integrations/ruby/
+- CFML integration: https://logister.org/docs/integrations/cfml/
