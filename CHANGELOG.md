@@ -2,6 +2,20 @@
 
 All notable changes to `logister-js` will be documented in this file.
 
+## v0.4.0 - 2026-08-08
+
+### Added
+
+- Added `prepareEvents()` and `sendEvents()` for explicit stable identifiers and chunked high-volume delivery.
+- Added configurable gzip/NDJSON batching with deterministic batch IDs, recursive `413` splitting, and automatic stable single-event fallback for older Logister servers.
+- Added per-attempt and total request deadlines plus configurable transient retry count, exponential delay, maximum delay, and jitter.
+
+### Changed
+
+- `sendEvent()` now assigns and reuses a stable UUID when the caller does not supply a nonblank `uuid` or `event_id`.
+- Retryable network, `408`, `425`, `429`, and `5xx` failures now preserve event identities and honor numeric or HTTP-date `Retry-After` values within configured caps.
+- Batch splitting and legacy fallback attempt every event even when an earlier subset fails, then surface the first failure after all attempts finish.
+
 ## v0.3.0 - 2026-07-25
 
 ### Changed

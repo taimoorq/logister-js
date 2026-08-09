@@ -30,6 +30,8 @@ export interface LogisterExceptionContext extends LogisterContext {
 }
 
 export interface LogisterEventPayload {
+  uuid?: string | undefined;
+  event_id?: string | undefined;
   event_type: LogisterEventType;
   level?: LogisterLevel | undefined;
   message?: string | undefined;
@@ -37,6 +39,8 @@ export interface LogisterEventPayload {
   occurred_at?: string | undefined;
   context?: LogisterContext | undefined;
 }
+
+export type PreparedLogisterEventPayload = LogisterEventPayload & { uuid: string };
 
 export interface LogisterCheckInPayload {
   slug: string;
@@ -62,6 +66,14 @@ export interface LogisterClientOptions {
   defaultContext?: LogisterContext | undefined;
   fetch?: typeof fetch | undefined;
   userAgent?: string | undefined;
+  maxRetries?: number | undefined;
+  retryBaseDelayMs?: number | undefined;
+  maxRetryDelayMs?: number | undefined;
+  retryJitterRatio?: number | undefined;
+  requestTimeoutMs?: number | undefined;
+  totalTimeoutMs?: number | undefined;
+  batchSize?: number | undefined;
+  batchCompression?: boolean | undefined;
 }
 
 export interface CaptureOptions {
