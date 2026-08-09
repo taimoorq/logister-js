@@ -1,6 +1,6 @@
 {
   "name": "logister-js",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "JavaScript and TypeScript SDK for sending errors, logs, metrics, transactions, spans, and check-ins to Logister.",
   "license": "MIT",
   "homepage": "https://docs.logister.org/",
@@ -73,8 +73,9 @@
     "dev": "tsup --watch",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "check:release-metadata": "node scripts/validate-release-metadata.mjs",
     "audit": "npm audit --audit-level=low",
-    "check": "npm run audit && npm run typecheck && npm run test && npm run build",
+    "check": "npm run audit && npm run check:release-metadata && npm run typecheck && npm run test && npm run build",
     "prepublishOnly": "npm run check"
   },
   "peerDependencies": {

@@ -22,6 +22,9 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - name: Check public repository safety
+        run: bash scripts/publication-safety-check.sh
+
       - name: Setup Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -48,14 +51,41 @@ jobs:
           }
           NODE
 
+      - name: Prepare release notes
+        run: |
+          title="$(awk -v tag="$GITHUB_REF_NAME" '
+            $0 ~ "^## " tag "([[:space:]]|-|$)" { sub(/^## /, ""); print; exit }
+          ' CHANGELOG.md)"
+          test -n "$title"
+          awk -v tag="$GITHUB_REF_NAME" '
+            $0 ~ "^## " tag "([[:space:]]|-|$)" { capture=1; next }
+            capture && /^## / { exit }
+            capture { print }
+          ' CHANGELOG.md > release-notes.md
+          test -s release-notes.md
+          echo "RELEASE_TITLE=$title" >> "$GITHUB_ENV"
+
       - name: Run checks
         run: npm run check
+
+      - name: Pack and inspect the exact release tarball
+        id: package
+        run: |
+          tarball="$(npm pack --json | node -e 'let input=""; process.stdin.on("data", chunk => input += chunk).on("end", () => process.stdout.write(JSON.parse(input)[0].filename))')"
+          test -f "$tarball"
+          if tar -tzf "$tarball" | grep -Eq '(^|/)(\.env|tmp/release-|[^/]+\.(key|pem|p12|pfx))$|^/|\.\./'; then
+            echo "::error::npm tarball contains a publication-unsafe path."
+            exit 1
+          fi
+          echo "tarball=$tarball" >> "$GITHUB_OUTPUT"
+          echo "sha1=$(shasum "$tarball" | awk '{print $1}')" >> "$GITHUB_OUTPUT"
 
       - name: Check npm package version
         id: npm_package
         run: |
           version="${GITHUB_REF_NAME#v}"
-          if npm view "logister-js@${version}" version >/dev/null 2>&1; then
+          versions="$(npm view logister-js versions --json)"
+          if VERSIONS="$versions" VERSION="$version" node -e 'const versions = JSON.parse(process.env.VERSIONS); process.exit(versions.includes(process.env.VERSION) ? 0 : 1)'; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
             echo "logister-js@${version} already exists on npm."
           else
@@ -65,50 +95,23 @@ jobs:
 
       - name: Publish package with npm trusted publishing
         if: steps.npm_package.outputs.exists != 'true'
-        run: npm publish --access public
+        run: npm publish "./${{ steps.package.outputs.tarball }}" --access public
 
-      - name: Set up Ruby
-        uses: ruby/setup-ruby@95ef2b042f9d7a56d8268cba8559e2842e2ad01b # v1.321.0
-        with:
-          ruby-version: "3.3"
-
-      - name: Build release notes from changelog
-        id: release_notes
+      - name: Verify npm publication
+        env:
+          EXPECTED_SHA1: ${{ steps.package.outputs.sha1 }}
         run: |
-          ruby <<'RUBY' > "$GITHUB_OUTPUT"
-          changelog_path = "CHANGELOG.md"
-          config_path = "config/release.yml"
-          tag = ENV.fetch("GITHUB_REF_NAME")
-
-          abort("Missing #{changelog_path}") unless File.exist?(changelog_path)
-          abort("Missing #{config_path}") unless File.exist?(config_path)
-
-          current_header = nil
-          body_lines = []
-          found = false
-
-          File.readlines(changelog_path, chomp: true).each do |line|
-            if line.start_with?("## ")
-              break if found
-
-              current_header = line.sub(/\A##\s+/, "")
-              found = current_header.start_with?(tag)
-              next
-            end
-
-            body_lines << line if found
-          end
-
-          abort("Could not find release notes for #{tag} in #{changelog_path}") unless found
-
-          body = body_lines.join("\n").strip
-          body = "Release #{tag}" if body.empty?
-
-          puts "name=#{current_header}"
-          puts "body<<EOF"
-          puts body
-          puts "EOF"
-          RUBY
+          version="${GITHUB_REF_NAME#v}"
+          for attempt in $(seq 1 30); do
+            published_version="$(npm view "logister-js@${version}" version 2>/dev/null || true)"
+            published_sha1="$(npm view "logister-js@${version}" dist.shasum 2>/dev/null || true)"
+            if [ "$published_version" = "$version" ] && [ "$published_sha1" = "$EXPECTED_SHA1" ]; then
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::npm did not expose the exact tested tarball within the verification window."
+          exit 1
 
       - name: Create or update GitHub release
         env:
@@ -116,12 +119,12 @@ jobs:
         run: |
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release edit "$GITHUB_REF_NAME" \
-              --title "${{ steps.release_notes.outputs.name }}" \
-              --notes "${{ steps.release_notes.outputs.body }}" \
+              --title "$RELEASE_TITLE" \
+              --notes-file release-notes.md \
               --latest
           else
             gh release create "$GITHUB_REF_NAME" \
-              --title "${{ steps.release_notes.outputs.name }}" \
-              --notes "${{ steps.release_notes.outputs.body }}" \
+              --title "$RELEASE_TITLE" \
+              --notes-file release-notes.md \
               --latest
           fi

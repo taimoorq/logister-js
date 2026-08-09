@@ -2,6 +2,12 @@
 
 All notable changes to `logister-js` will be documented in this file.
 
+## v0.4.1 - 2026-08-09
+
+### Fixed
+
+- Send the canonical `occurred_at` field for monitor check-ins so Logister preserves caller-supplied timestamps.
+
 ## v0.4.0 - 2026-08-08
 
 ### Added

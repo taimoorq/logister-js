@@ -466,6 +466,7 @@ describe("LogisterClient", () => {
 
     await client.checkIn("nightly-import", "ok", {
       durationMs: 88.5,
+      checkedAt: "2026-08-09T12:30:00Z",
       expectedIntervalSeconds: 600,
       traceId: "trace-456",
       requestId: "req-456"
@@ -481,6 +482,8 @@ describe("LogisterClient", () => {
     expect(payload.check_in.environment).toBe("production");
     expect(payload.check_in.release).toBe("worker@1.2.3");
     expect(payload.check_in.duration_ms).toBe(88.5);
+    expect(payload.check_in.occurred_at).toBe("2026-08-09T12:30:00Z");
+    expect(payload.check_in).not.toHaveProperty("checked_at");
     expect(payload.check_in.expected_interval_seconds).toBe(600);
     expect(payload.check_in.trace_id).toBe("trace-456");
     expect(payload.check_in.request_id).toBe("req-456");

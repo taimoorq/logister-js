@@ -48,7 +48,7 @@ export interface LogisterCheckInPayload {
   environment?: string | undefined;
   release?: string | undefined;
   duration_ms?: number | undefined;
-  checked_at?: string | undefined;
+  occurred_at?: string | undefined;
   expected_interval_seconds?: number | undefined;
   trace_id?: string | undefined;
   request_id?: string | undefined;
