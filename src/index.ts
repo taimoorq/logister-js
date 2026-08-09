@@ -14,5 +14,6 @@ export type {
   LogisterLevel,
   LogisterStackFrame,
   MetricOptions,
+  PreparedLogisterEventPayload,
   SpanOptions
 } from "./types";

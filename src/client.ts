@@ -9,12 +9,34 @@ import type {
   LogisterEventPayload,
   LogisterStackFrame,
   MetricOptions,
+  PreparedLogisterEventPayload,
   SpanOptions
 } from "./types";
 
 const DEFAULT_INGEST_PATH = "/api/v1/ingest_events";
+const DEFAULT_BATCH_INGEST_PATH = "/api/v1/ingest_events/batch";
 const DEFAULT_CHECK_IN_PATH = "/api/v1/check_ins";
 const DEFAULT_DEPLOYMENT_PATH = "/api/v1/deployments";
+const RETRYABLE_STATUS_CODES = new Set([408, 425, 429]);
+const UNSUPPORTED_BATCH_STATUS_CODES = new Set([404, 405, 415, 501]);
+const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
+const DEFAULT_TOTAL_TIMEOUT_MS = 65_000;
+const DEFAULT_MAX_RETRY_DELAY_MS = 30_000;
+const DEFAULT_RETRY_JITTER_RATIO = 0.2;
+
+class LogisterRequestError extends Error {
+  constructor(readonly status: number, readonly retryAfterMs: number | undefined = undefined) {
+    super(`Logister request failed with status ${status}`);
+    this.name = "LogisterRequestError";
+  }
+}
+
+class LogisterTimeoutError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LogisterTimeoutError";
+  }
+}
 
 export class LogisterClient {
   private readonly apiKey: string;
@@ -27,6 +49,15 @@ export class LogisterClient {
   private readonly defaultContext: LogisterContext;
   private readonly fetchImpl: typeof fetch;
   private readonly userAgent: string;
+  private readonly maxRetries: number;
+  private readonly retryBaseDelayMs: number;
+  private readonly maxRetryDelayMs: number;
+  private readonly retryJitterRatio: number;
+  private readonly requestTimeoutMs: number;
+  private readonly totalTimeoutMs: number;
+  private readonly batchSize: number;
+  private readonly batchCompression: boolean;
+  private readonly generatedEventIds = new WeakMap<object, string>();
 
   constructor(options: LogisterClientOptions) {
     if (!options.apiKey) throw new Error("LogisterClient requires apiKey");
@@ -44,17 +75,40 @@ export class LogisterClient {
     this.branch = options.branch;
     this.defaultContext = options.defaultContext ?? {};
     this.fetchImpl = options.fetch ?? fetch;
-    this.userAgent = options.userAgent ?? "logister-js/0.2.5";
+    this.userAgent = options.userAgent ?? "logister-js/0.4.0";
+    this.maxRetries = nonNegativeInteger(options.maxRetries, 3);
+    this.retryBaseDelayMs = nonNegativeNumber(options.retryBaseDelayMs, 100);
+    this.maxRetryDelayMs = nonNegativeNumber(options.maxRetryDelayMs, DEFAULT_MAX_RETRY_DELAY_MS);
+    this.retryJitterRatio = clampNumber(options.retryJitterRatio, DEFAULT_RETRY_JITTER_RATIO, 0, 1);
+    this.requestTimeoutMs = positiveNumber(options.requestTimeoutMs, DEFAULT_REQUEST_TIMEOUT_MS);
+    this.totalTimeoutMs = positiveNumber(options.totalTimeoutMs, DEFAULT_TOTAL_TIMEOUT_MS);
+    this.batchSize = positiveInteger(options.batchSize, 50);
+    this.batchCompression = options.batchCompression ?? true;
   }
 
   async sendEvent(payload: LogisterEventPayload): Promise<Response> {
     return this.postJson(DEFAULT_INGEST_PATH, {
-      event: compact({
-        ...payload,
-        occurred_at: normalizeTimestamp(payload.occurred_at),
-        context: this.withDefaultContext(payload.context)
-      })
-    });
+      event: this.normalizeEvent(payload)
+    }, this.requestDeadline());
+  }
+
+  prepareEvents(payloads: readonly LogisterEventPayload[]): PreparedLogisterEventPayload[] {
+    return payloads.map((payload) => this.normalizeEvent(payload) as PreparedLogisterEventPayload);
+  }
+
+  async sendEvents(payloads: readonly LogisterEventPayload[]): Promise<Response> {
+    if (payloads.length === 0) throw new Error("LogisterClient.sendEvents requires at least one event");
+
+    const events = this.prepareEvents(payloads);
+    const deadlineAt = this.requestDeadline();
+    let lastResponse: Response | undefined;
+
+    for (let offset = 0; offset < events.length; offset += this.batchSize) {
+      const batch = events.slice(offset, offset + this.batchSize);
+      lastResponse = await this.postEventBatch(batch, deadlineAt);
+    }
+
+    return lastResponse as Response;
   }
 
   async captureException(error: unknown, options: CaptureOptions = {}): Promise<Response> {
@@ -183,8 +237,8 @@ export class LogisterClient {
     });
   }
 
-  private async postJson(path: string, body: unknown): Promise<Response> {
-    const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
+  private async postJson(path: string, body: unknown, deadlineAt = this.requestDeadline()): Promise<Response> {
+    return this.requestWithRetry(path, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -192,13 +246,151 @@ export class LogisterClient {
         "user-agent": this.userAgent
       },
       body: JSON.stringify(body)
-    });
+    }, deadlineAt);
+  }
 
-    if (!response.ok) {
-      throw new Error(`Logister request failed with status ${response.status}`);
+  private async postEventBatch(events: readonly LogisterEventPayload[], deadlineAt: number): Promise<Response> {
+    const ndjson = `${events.map((event) => JSON.stringify({ event })).join("\n")}\n`;
+    const encoded = await encodeBatchBody(ndjson, this.batchCompression);
+    const headers: Record<string, string> = {
+      "content-type": "application/x-ndjson",
+      authorization: `Bearer ${this.apiKey}`,
+      "user-agent": this.userAgent,
+      "x-logister-batch-id": await deterministicBatchId(events)
+    };
+    if (encoded.compressed) headers["content-encoding"] = "gzip";
+
+    try {
+      return await this.requestWithRetry(DEFAULT_BATCH_INGEST_PATH, {
+        method: "POST",
+        headers,
+        body: encoded.body
+      }, deadlineAt);
+    } catch (error) {
+      if (error instanceof LogisterRequestError && error.status === 413 && events.length > 1) {
+        const middle = Math.ceil(events.length / 2);
+        const failures: unknown[] = [];
+        let firstResponse: Response | undefined;
+        let secondResponse: Response | undefined;
+        try {
+          firstResponse = await this.postEventBatch(events.slice(0, middle), deadlineAt);
+        } catch (splitError) {
+          failures.push(splitError);
+        }
+        try {
+          secondResponse = await this.postEventBatch(events.slice(middle), deadlineAt);
+        } catch (splitError) {
+          failures.push(splitError);
+        }
+        if (failures.length > 0) throw failures[0];
+
+        return secondResponse ?? firstResponse as Response;
+      }
+      if (error instanceof LogisterRequestError && UNSUPPORTED_BATCH_STATUS_CODES.has(error.status)) {
+        const failures: unknown[] = [];
+        let response: Response | undefined;
+        for (const event of events) {
+          try {
+            response = await this.postJson(DEFAULT_INGEST_PATH, { event }, deadlineAt);
+          } catch (fallbackError) {
+            failures.push(fallbackError);
+          }
+        }
+        if (failures.length > 0) throw failures[0];
+
+        return response as Response;
+      }
+
+      throw error;
+    }
+  }
+
+  private async requestWithRetry(path: string, init: RequestInit, deadlineAt: number): Promise<Response> {
+    let lastError: unknown;
+
+    for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
+      try {
+        const response = await this.fetchWithDeadline(`${this.baseUrl}${path}`, init, deadlineAt);
+        if (response.ok) return response;
+
+        const error = new LogisterRequestError(
+          response.status,
+          parseRetryAfterMs(response.headers?.get("retry-after"))
+        );
+        if (!isRetryableStatus(response.status) || attempt === this.maxRetries) throw error;
+        lastError = error;
+      } catch (error) {
+        lastError = error;
+        if (error instanceof LogisterRequestError && !isRetryableStatus(error.status)) throw error;
+        if (attempt === this.maxRetries) throw error;
+      }
+
+      await this.waitForRetry(lastError, attempt, deadlineAt);
     }
 
-    return response;
+    throw lastError;
+  }
+
+  private normalizeEvent(payload: LogisterEventPayload): LogisterEventPayload {
+    return compact({
+      ...payload,
+      uuid: this.stableEventIdentifier(payload),
+      occurred_at: normalizeTimestamp(payload.occurred_at),
+      context: this.withDefaultContext(payload.context)
+    });
+  }
+
+  private stableEventIdentifier(payload: LogisterEventPayload): string {
+    const supplied = firstNonBlankString(payload.uuid, payload.event_id);
+    if (supplied) return supplied;
+
+    const cached = this.generatedEventIds.get(payload);
+    if (cached) return cached;
+
+    const generated = randomUuid();
+    this.generatedEventIds.set(payload, generated);
+    return generated;
+  }
+
+  private requestDeadline(): number {
+    return Date.now() + this.totalTimeoutMs;
+  }
+
+  private async fetchWithDeadline(url: string, init: RequestInit, deadlineAt: number): Promise<Response> {
+    const remaining = deadlineAt - Date.now();
+    if (remaining <= 0) throw new LogisterTimeoutError("Logister request exceeded its total timeout");
+
+    const timeoutMs = Math.max(1, Math.min(this.requestTimeoutMs, remaining));
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await this.fetchImpl(url, { ...init, signal: controller.signal });
+    } catch (error) {
+      if (controller.signal.aborted) {
+        throw new LogisterTimeoutError(`Logister request attempt timed out after ${Math.ceil(timeoutMs)}ms`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  private async waitForRetry(error: unknown, attempt: number, deadlineAt: number): Promise<void> {
+    const remaining = deadlineAt - Date.now();
+    if (remaining <= 0) throw new LogisterTimeoutError("Logister request exceeded its total timeout");
+
+    const retryAfterMs = error instanceof LogisterRequestError ? error.retryAfterMs : undefined;
+    const baseDelay = retryAfterMs ?? this.retryBaseDelayMs * (2 ** attempt);
+    const boundedDelay = Math.min(Math.max(0, baseDelay), this.maxRetryDelayMs);
+    const jitterRoom = Math.max(0, this.maxRetryDelayMs - boundedDelay);
+    const jitter = Math.min(jitterRoom, boundedDelay * this.retryJitterRatio * Math.random());
+    const requestedDelay = boundedDelay + jitter;
+    if (requestedDelay >= remaining) {
+      await delay(remaining);
+      throw new LogisterTimeoutError("Logister request exceeded its total timeout while waiting to retry");
+    }
+
+    await delay(requestedDelay);
   }
 
   private withDefaultContext(context: LogisterContext | undefined): LogisterContext | undefined {
@@ -415,4 +607,89 @@ function randomId(bytes: number): string {
   }
 
   return `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`.slice(0, bytes * 2);
+}
+
+function randomUuid(): string {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+
+  const hex = randomId(16).padEnd(32, "0").slice(0, 32).split("");
+  hex[12] = "4";
+  hex[16] = ((Number.parseInt(hex[16] ?? "0", 16) & 0x3) | 0x8).toString(16);
+  return `${hex.slice(0, 8).join("")}-${hex.slice(8, 12).join("")}-${hex.slice(12, 16).join("")}-${hex.slice(16, 20).join("")}-${hex.slice(20).join("")}`;
+}
+
+async function encodeBatchBody(
+  ndjson: string,
+  compress: boolean
+): Promise<{ body: BodyInit; compressed: boolean }> {
+  if (!compress || typeof CompressionStream === "undefined") return { body: ndjson, compressed: false };
+
+  const stream = new Blob([ndjson]).stream().pipeThrough(new CompressionStream("gzip"));
+  return { body: await new Response(stream).arrayBuffer(), compressed: true };
+}
+
+async function deterministicBatchId(events: readonly LogisterEventPayload[]): Promise<string> {
+  const identifiers = events.map((event) => event.uuid ?? event.event_id ?? "").join("\n");
+  const bytes = new TextEncoder().encode(identifiers);
+  if (globalThis.crypto?.subtle) {
+    const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+    return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
+  }
+
+  let hash = 2166136261;
+  for (const byte of bytes) hash = Math.imul(hash ^ byte, 16777619);
+  return `fnv1a-${(hash >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+function parseRetryAfterMs(value: string | null | undefined, nowMs = Date.now()): number | undefined {
+  const header = value?.trim();
+  if (!header) return undefined;
+
+  const seconds = Number(header);
+  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000;
+
+  const dateMs = Date.parse(header);
+  if (!Number.isFinite(dateMs)) return undefined;
+  return Math.max(0, dateMs - nowMs);
+}
+
+function firstNonBlankString(...values: readonly (string | undefined)[]): string | undefined {
+  for (const value of values) {
+    const normalized = value?.trim();
+    if (normalized) return normalized;
+  }
+  return undefined;
+}
+
+function finiteNumber(value: number | undefined, fallback: number): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
+}
+
+function nonNegativeNumber(value: number | undefined, fallback: number): number {
+  return Math.max(0, finiteNumber(value, fallback));
+}
+
+function positiveNumber(value: number | undefined, fallback: number): number {
+  return Math.max(1, finiteNumber(value, fallback));
+}
+
+function nonNegativeInteger(value: number | undefined, fallback: number): number {
+  return Math.floor(nonNegativeNumber(value, fallback));
+}
+
+function positiveInteger(value: number | undefined, fallback: number): number {
+  return Math.max(1, Math.floor(finiteNumber(value, fallback)));
+}
+
+function clampNumber(value: number | undefined, fallback: number, minimum: number, maximum: number): number {
+  return Math.min(maximum, Math.max(minimum, finiteNumber(value, fallback)));
+}
+
+function isRetryableStatus(status: number): boolean {
+  return RETRYABLE_STATUS_CODES.has(status) || status >= 500;
+}
+
+function delay(milliseconds: number): Promise<void> {
+  if (milliseconds <= 0) return Promise.resolve();
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }

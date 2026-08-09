@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { gunzipSync } from "node:zlib";
 
 import { LogisterClient } from "./client";
 
@@ -20,6 +21,319 @@ describe("LogisterClient", () => {
         headers: expect.objectContaining({ authorization: "Bearer test-token" })
       })
     );
+    const payload = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(payload.event.uuid).toMatch(/^[0-9a-f-]{36}$/u);
+  });
+
+  it("sends stable events as gzip NDJSON batches", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 202 });
+    const client = new LogisterClient({
+      apiKey: "test-token",
+      baseUrl: "https://logister.example",
+      fetch: fetchMock as unknown as typeof fetch,
+      batchSize: 10
+    });
+
+    await client.sendEvents([
+      { uuid: "11111111-1111-4111-8111-111111111111", event_type: "log", message: "one" },
+      { uuid: "22222222-2222-4222-8222-222222222222", event_type: "metric", message: "two" }
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://logister.example/api/v1/ingest_events/batch");
+    expect(init.headers).toEqual(expect.objectContaining({
+      "content-type": "application/x-ndjson",
+      "content-encoding": "gzip"
+    }));
+
+    const compressed = Buffer.from(init.body as ArrayBuffer);
+    const envelopes = gunzipSync(compressed).toString("utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(envelopes.map((row) => row.event.uuid)).toEqual([
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222"
+    ]);
+  });
+
+  it("prepares reusable event identities and replaces blank identifiers", async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 202 });
+    const client = new LogisterClient({
+      apiKey: "test-token",
+      baseUrl: "https://logister.example",
+      fetch: fetchMock as unknown as typeof fetch,
+      batchCompression: false
+    });
+    const source = [
+      { uuid: " ", event_id: "", event_type: "log" as const, message: "one" }
+    ];
+
+    const prepared = client.prepareEvents(source);
+    await client.sendEvents(source);
+
+    expect(prepared[0]?.uuid).toMatch(/^[0-9a-f-]{36}$/u);
+    expect(source[0]?.uuid).toBe(" ");
+    const envelope = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body).trim());
+    expect(envelope.event.uuid).toBe(prepared[0]?.uuid);
+  });
+
+  it("reuses generated identities when an external caller repeats a partially accepted sendEvents call", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, status: 202 })
+      .mockResolvedValueOnce({ ok: false, status: 503 })
+      .mockResolvedValueOnce({ ok: true, status: 202 })
+      .mockResolvedValueOnce({ ok: true, status: 202 });
+    const client = new LogisterClient({
+      apiKey: "test-token",
+      baseUrl: "https://logister.example",
+      fetch: fetchMock as unknown as typeof fetch,
+      batchSize: 1,
+      batchCompression: false,
+      maxRetries: 0
+    });
+    const events = [
+      { event_type: "log" as const, message: "one" },
+      { event_type: "log" as const, message: "two" }
+    ];
+
+    await expect(client.sendEvents(events)).rejects.toThrow("status 503");
+    await client.sendEvents(events);
+
+    const identifiers = fetchMock.mock.calls.map(([, init]) => {
+      const envelope = JSON.parse(String((init as RequestInit).body).trim());
+      return envelope.event.uuid as string;
+    });
+    expect(identifiers[0]).toBe(identifiers[2]);
+    expect(identifiers[1]).toBe(identifiers[3]);
+  });
+
+  it("falls back to stable single-event delivery when the batch endpoint is unavailable", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 404 })
+      .mockResolvedValue({ ok: true, status: 201 });
+    const client = new LogisterClient({
+      apiKey: "test-token",
+      baseUrl: "https://logister.example",
+      fetch: fetchMock as unknown as typeof fetch
+    });
+
+    await client.sendEvents([
+      { uuid: "11111111-1111-4111-8111-111111111111", event_type: "log", message: "one" },
+      { uuid: "22222222-2222-4222-8222-222222222222", event_type: "metric", message: "two" }
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls.slice(1).map(([url]) => url)).toEqual([
+      "https://logister.example/api/v1/ingest_events",
+      "https://logister.example/api/v1/ingest_events"
+    ]);
+    const fallbackIds = fetchMock.mock.calls.slice(1).map(([, init]) => (
+      JSON.parse(String((init as RequestInit).body)).event.uuid
+    ));
+    expect(fallbackIds).toEqual([
+      "11111111-1111-4111-8111-111111111111",
+      "22222222-2222-4222-8222-222222222222"
+    ]);
+  });
+
+  it("attempts every single-event fallback even when an earlier fallback fails", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 404 })
+      .mockResolvedValueOnce({ ok: false, status: 503 })
+      .mockResolvedValueOnce({ ok: true, status: 201 });
+    const client = new LogisterClient({
+      apiKey: "test-token",
+      baseUrl: "https://logister.example",
+      fetch: fetchMock as unknown as typeof fetch,
+      batchCompression: false,
+      maxRetries: 0
+    });
+
+    await expect(client.sendEvents([
+      { uuid: "11111111-1111-4111-8111-111111111111", event_type: "log", message: "one" },
+      { uuid: "22222222-2222-4222-8222-222222222222", event_type: "log", message: "two" }
+    ])).rejects.toThrow("status 503");
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const secondFallback = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body));
+    expect(secondFallback.event.uuid).toBe("22222222-2222-4222-8222-222222222222");
+  });
+
+  it("attempts both 413 split halves even when the first half fails", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 413 })
+      .mockResolvedValueOnce({ ok: false, status: 503 })
+      .mockResolvedValueOnce({ ok: true, status: 202 });
+    const client = new LogisterClient({
+      apiKey: "test-token",
+      baseUrl: "https://logister.example",
+      fetch: fetchMock as unknown as typeof fetch,
+      batchCompression: false,
+      maxRetries: 0
+    });
+
+    await expect(client.sendEvents([
+      { uuid: "11111111-1111-4111-8111-111111111111", event_type: "log", message: "one" },
+      { uuid: "22222222-2222-4222-8222-222222222222", event_type: "log", message: "two" }
+    ])).rejects.toThrow("status 503");
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    const secondHalf = JSON.parse(String(fetchMock.mock.calls[2]?.[1]?.body).trim());
+    expect(secondHalf.event.uuid).toBe("22222222-2222-4222-8222-222222222222");
+  });
+
+  it("retries a transient batch response without changing its body or identity", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 503 })
+      .mockResolvedValueOnce({ ok: true, status: 202 });
+    const client = new LogisterClient({
+      apiKey: "test-token",
+      baseUrl: "https://logister.example",
+      fetch: fetchMock as unknown as typeof fetch,
+      maxRetries: 1,
+      retryBaseDelayMs: 0
+    });
+
+    await client.sendEvents([
+      { uuid: "11111111-1111-4111-8111-111111111111", event_type: "log", message: "one" }
+    ]);
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const first = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const second = fetchMock.mock.calls[1]?.[1] as RequestInit;
+    expect(first.headers).toEqual(second.headers);
+    expect(Buffer.from(first.body as ArrayBuffer)).toEqual(Buffer.from(second.body as ArrayBuffer));
+  });
+
+  it("retries transient failures without changing the event id", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: false, status: 503 })
+      .mockResolvedValueOnce({ ok: true, status: 201 });
+    const client = new LogisterClient({
+      apiKey: "test-token",
+      baseUrl: "https://logister.example",
+      fetch: fetchMock as unknown as typeof fetch,
+      maxRetries: 1,
+      retryBaseDelayMs: 0
+    });
+
+    await client.captureMessage("retry me");
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const first = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    const second = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body));
+    expect(first.event.uuid).toBe(second.event.uuid);
+  });
+
+  it("aborts an attempt at the configured request timeout", async () => {
+    const fetchMock = vi.fn((_url: string | URL | Request, init?: RequestInit) => (
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
+      })
+    ));
+    const client = new LogisterClient({
+      apiKey: "test-token",
+      baseUrl: "https://logister.example",
+      fetch: fetchMock as unknown as typeof fetch,
+      maxRetries: 0,
+      requestTimeoutMs: 5,
+      totalTimeoutMs: 50
+    });
+
+    await expect(client.captureMessage("timeout")).rejects.toThrow("attempt timed out");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("parses and caps Retry-After before a retry", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 429,
+          headers: new Headers({ "Retry-After": "120" })
+        })
+        .mockResolvedValueOnce({ ok: true, status: 201 });
+      const client = new LogisterClient({
+        apiKey: "test-token",
+        baseUrl: "https://logister.example",
+        fetch: fetchMock as unknown as typeof fetch,
+        maxRetries: 1,
+        maxRetryDelayMs: 5,
+        retryJitterRatio: 0,
+        totalTimeoutMs: 100
+      });
+
+      const request = client.captureMessage("rate limited");
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(4);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await request;
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("parses an HTTP-date Retry-After value", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-08-08T12:00:00.000Z"));
+      const fetchMock = vi.fn()
+        .mockResolvedValueOnce({
+          ok: false,
+          status: 503,
+          headers: new Headers({ "Retry-After": "Sat, 08 Aug 2026 12:00:01 GMT" })
+        })
+        .mockResolvedValueOnce({ ok: true, status: 201 });
+      const client = new LogisterClient({
+        apiKey: "test-token",
+        baseUrl: "https://logister.example",
+        fetch: fetchMock as unknown as typeof fetch,
+        maxRetries: 1,
+        maxRetryDelayMs: 2_000,
+        retryJitterRatio: 0,
+        totalTimeoutMs: 2_500
+      });
+
+      const request = client.captureMessage("temporarily unavailable");
+      await vi.advanceTimersByTimeAsync(999);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1);
+      await request;
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops at the total retry deadline while honoring Retry-After", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: false,
+        status: 429,
+        headers: new Headers({ "Retry-After": "60" })
+      });
+      const client = new LogisterClient({
+        apiKey: "test-token",
+        baseUrl: "https://logister.example",
+        fetch: fetchMock as unknown as typeof fetch,
+        maxRetries: 3,
+        maxRetryDelayMs: 1_000,
+        retryJitterRatio: 0,
+        totalTimeoutMs: 10
+      });
+
+      const request = client.captureMessage("deadline");
+      const rejection = expect(request).rejects.toThrow("total timeout while waiting to retry");
+      await vi.advanceTimersByTimeAsync(10);
+      await rejection;
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("captures JavaScript exceptions with structured frames", async () => {

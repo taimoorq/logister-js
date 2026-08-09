@@ -232,9 +232,53 @@ Recommended middleware order:
 - `captureTransaction(name, durationMs, options)`
 - `captureSpan(name, durationMs, options)`
 - `checkIn(slug, status, options)`
+- `prepareEvents(payloads)`
 - `sendEvent(payload)`
+- `sendEvents(payloads)`
 
 Capture options support per-event `environment`, `release`, `traceId`, `requestId`, `sessionId`, and `userId`. Metric options also accept `unit`; span options add `spanId`, `parentSpanId`, `kind`, `status`, `startedAt`, and `endedAt`; check-in options accept `release`, `durationMs`, `expectedIntervalSeconds`, `traceId`, and `requestId`.
+
+`sendEvent` assigns a stable UUID when one is not supplied and retries transient
+network, `429`, and `5xx` failures with that same identifier. Use `sendEvents` for
+high-volume producers; it chunks events, sends gzip/NDJSON to the batch endpoint, and
+falls back to stable single-event delivery for an older Logister server:
+
+```ts
+await client.sendEvents([
+  { event_type: "metric", message: "queue.depth", context: { value: 12 } },
+  { event_type: "metric", message: "queue.latency", context: { value: 48 } }
+]);
+```
+
+If your application may repeat an entire call after partial delivery, prepare the
+events once and reuse the returned payloads. This keeps generated UUIDs stable even
+when the retry happens outside the SDK's internal retry loop:
+
+```ts
+const events = client.prepareEvents([
+  { event_type: "metric", message: "queue.depth", context: { value: 12 } },
+  { event_type: "metric", message: "queue.latency", context: { value: 48 } }
+]);
+
+try {
+  await client.sendEvents(events);
+} catch {
+  await client.sendEvents(events);
+}
+```
+
+The same client also remembers generated UUIDs when the same source event objects are
+passed again. `prepareEvents` is preferable when events cross a queue, serialization,
+or process boundary because the identifiers are explicit in the returned payloads.
+
+Tune `batchSize`, `batchCompression`, `maxRetries`, `retryBaseDelayMs`,
+`maxRetryDelayMs`, and `retryJitterRatio` in the `LogisterClient` constructor when the
+defaults are not appropriate. `requestTimeoutMs` bounds each fetch attempt and
+`totalTimeoutMs` bounds all chunks, splits, fallbacks, retry waits, and attempts in one
+public send call. Retryable responses honor numeric or HTTP-date `Retry-After` values,
+subject to the configured total and per-delay caps.
+The defaults are 5 seconds per attempt, 65 seconds total, a 30-second retry-delay
+cap, and 20% positive jitter.
 
 Browser apps can record navigation and resource timing with the browser entrypoint. A browser cannot keep an ingest key secret: anyone who can load the page can inspect and reuse it. Use a write-only project key only if that abuse risk is acceptable, or send browser telemetry through your own backend.
 
