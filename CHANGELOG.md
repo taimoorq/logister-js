@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.4.2 - 2026-09-11
+
+- Preserved Node 22 compatibility by restoring Node 22 declarations and validating the supported type/runtime floor.
+- Updated Vitest to 5.0.0 and the reviewed esbuild override to 0.28.2; refreshed the lockfile and verified declarations, ESM and CommonJS builds.
+- Restored explicit publication dispatch and immutable-tag recovery after successful current-main CI. Weekly dependency checks cannot publish releases.
+- Includes the previously tagged, unpublished 0.4.1 check-in timestamp fix.
+
 All notable changes to `logister-js` will be documented in this file.
 
 ## v0.4.1 - 2026-08-09

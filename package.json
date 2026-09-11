@@ -1,6 +1,6 @@
 {
   "name": "logister-js",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "description": "JavaScript and TypeScript SDK for sending errors, logs, metrics, transactions, spans, and check-ins to Logister.",
   "license": "MIT",
   "homepage": "https://docs.logister.org/",
@@ -83,16 +83,16 @@
   },
   "devDependencies": {
     "@types/express": "^5.0.3",
-    "@types/node": "^26.1.2",
+    "@types/node": "^22.20.2",
     "@types/supertest": "^7.2.1",
     "express": "^5.1.0",
     "rimraf": "^6.0.1",
     "supertest": "^7.1.1",
     "tsup": "^8.5.0",
     "typescript": "^5.9.3",
-    "vitest": "^4.1.10"
+    "vitest": "^5.0.0"
   },
   "overrides": {
-    "esbuild": "0.28.1"
+    "esbuild": "0.28.2"
   }
 }

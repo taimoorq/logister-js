@@ -8,6 +8,12 @@ const client = readFileSync(new URL("src/client.ts", root), "utf8");
 const changelog = readFileSync(new URL("CHANGELOG.md", root), "utf8");
 const version = packageJson.version;
 
+const nodeFloor = /^>=(\d+)(?:\.\d+)*$/.exec(packageJson.engines?.node || "")?.[1];
+const nodeTypes = /^\^(\d+)\./.exec(packageJson.devDependencies?.["@types/node"] || "")?.[1];
+if (!nodeFloor || nodeTypes !== nodeFloor) {
+  fail("@types/node must use the oldest supported Node major from engines.node");
+}
+
 if (packageLock.version !== version || packageLock.packages?.[""]?.version !== version) {
   fail(`package-lock.json does not match package version ${version}`);
 }
