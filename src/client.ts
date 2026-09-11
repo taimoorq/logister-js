@@ -75,7 +75,7 @@ export class LogisterClient {
     this.branch = options.branch;
     this.defaultContext = options.defaultContext ?? {};
     this.fetchImpl = options.fetch ?? fetch;
-    this.userAgent = options.userAgent ?? "logister-js/0.4.1";
+    this.userAgent = options.userAgent ?? "logister-js/0.4.2";
     this.maxRetries = nonNegativeInteger(options.maxRetries, 3);
     this.retryBaseDelayMs = nonNegativeNumber(options.retryBaseDelayMs, 100);
     this.maxRetryDelayMs = nonNegativeNumber(options.maxRetryDelayMs, DEFAULT_MAX_RETRY_DELAY_MS);
