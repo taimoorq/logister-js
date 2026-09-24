@@ -518,3 +518,49 @@ package identity before creating the GitHub Release. Never move a consumed tag.
 Weekly CI audits/tests current dependencies and cannot trigger automatic publication.
 Dependabot groups compatible minor/patch updates; major toolchain migrations keep
 separate PRs. Pin Actions to full commits and retain supported runtime floors.
+
+## Request correlation (0.5.0+)
+
+Express middleware applies request-local context to logs, errors, transactions,
+and spans using AsyncLocalStorage. Incoming W3C version 00 flags and parent spans
+are preserved. For application HTTP calls, opt in with an exact origin allowlist:
+
+```ts
+import { createTracedFetch, traceOptions, LogisterFetchError } from "logister-js";
+import { currentTraceContext } from "logister-js/node";
+
+const request = createTracedFetch(client, {
+  allowedOrigins: ["https://api.example.test"],
+  excludedUrls: ["https://api.example.test/mobile-token"],
+  currentTrace: currentTraceContext, // omit in the browser
+});
+try {
+  const { response, traceContext } = await request("https://api.example.test/orders");
+  if (response.status >= 500 && traceContext) {
+    await client.captureException(new Error("Order request failed"), traceOptions(traceContext));
+  }
+} catch (error) {
+  if (error instanceof LogisterFetchError && error.traceContext) {
+    await client.captureException(error, traceOptions(error.traceContext));
+  }
+  throw error;
+}
+```
+
+The wrapper records an HTTP span and returns an immutable handle per attempt.
+It uses manual redirects: handle 3xx explicitly and call the wrapper again for the
+next destination. Browsers can return an opaque redirect response. Cross-origin
+browser APIs must allow `traceparent` and `x-request-id` in CORS request headers.
+SDK export URLs are excluded automatically; list your token endpoints explicitly.
+An existing valid outbound trace header is reused. No global fetch patching occurs.
+
+A linked-project lookup also requires Logister 3.7+, the instance flag
+`LOGISTER_CROSS_PROJECT_CORRELATIONS=true`, and explicit project/environment
+connections under Settings → Integrations → Connected projects. Enable related
+requests on both projects. A connection never grants project access.
+
+Use the returned request handle when reporting a handled HTTP failure later.
+Do not attach the most recent request to an unrelated crash or OS diagnostic.
+Configure each app's own `release` and `environment`; mobile and backend releases
+are independent. The backend shows exact identifier evidence and retention gaps.
+See the [request correlation guide](https://logister.org/docs/request-correlation/).

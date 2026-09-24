@@ -39,6 +39,15 @@ class LogisterTimeoutError extends Error {
 }
 
 export class LogisterClient {
+  private requestContextProvider: (() => LogisterContext) | undefined;
+  setRequestContextProvider(provider: () => LogisterContext): void { this.requestContextProvider = provider; }
+  isTelemetryUrl(url: string): boolean {
+    const target = new URL(url);
+    return [DEFAULT_INGEST_PATH, DEFAULT_BATCH_INGEST_PATH, DEFAULT_CHECK_IN_PATH, DEFAULT_DEPLOYMENT_PATH].some(path => {
+      const endpoint = new URL(this.baseUrl + path);
+      return target.origin === endpoint.origin && target.pathname === endpoint.pathname;
+    });
+  }
   private readonly apiKey: string;
   private readonly baseUrl: string;
   private readonly environment: string | undefined;
@@ -75,7 +84,7 @@ export class LogisterClient {
     this.branch = options.branch;
     this.defaultContext = options.defaultContext ?? {};
     this.fetchImpl = options.fetch ?? fetch;
-    this.userAgent = options.userAgent ?? "logister-js/0.4.2";
+    this.userAgent = options.userAgent ?? "logister-js/0.5.0";
     this.maxRetries = nonNegativeInteger(options.maxRetries, 3);
     this.retryBaseDelayMs = nonNegativeNumber(options.retryBaseDelayMs, 100);
     this.maxRetryDelayMs = nonNegativeNumber(options.maxRetryDelayMs, DEFAULT_MAX_RETRY_DELAY_MS);
@@ -175,7 +184,10 @@ export class LogisterClient {
 
   async captureSpan(name: string, durationMs: number, options: SpanOptions = {}): Promise<Response> {
     const spanId = options.spanId ?? randomId(16);
-    const traceId = options.traceId ?? spanId;
+    const active = this.requestContextProvider?.() ?? {};
+    options = { ...options, requestId: options.requestId ?? active.request_id as string | undefined,
+      parentSpanId: options.parentSpanId ?? (spanId !== active.span_id ? active.span_id as string | undefined : undefined) };
+    const traceId = options.traceId ?? active.trace_id as string | undefined ?? randomId(32);
     const startedAt = normalizeTimestamp(options.startedAt) ?? new Date(Date.now() - Math.max(0, durationMs)).toISOString();
 
     return this.sendEvent(compact({
@@ -396,6 +408,7 @@ export class LogisterClient {
   private withDefaultContext(context: LogisterContext | undefined): LogisterContext | undefined {
     const merged = compact({
       ...this.defaultContext,
+      ...this.requestContextProvider?.(),
       ...context,
       environment: context?.environment ?? this.defaultContext.environment ?? this.environment,
       release: context?.release ?? this.defaultContext.release ?? this.release,
@@ -415,6 +428,8 @@ export class LogisterClient {
       ...context,
       environment: context?.environment ?? options.environment,
       release: context?.release ?? options.release,
+      span_id: context?.span_id ?? options.spanId,
+      parent_span_id: context?.parent_span_id ?? options.parentSpanId,
       trace_id: context?.trace_id ?? options.traceId,
       request_id: context?.request_id ?? options.requestId,
       session_id: context?.session_id ?? options.sessionId,

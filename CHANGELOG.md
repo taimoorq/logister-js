@@ -1,5 +1,10 @@
 # Changelog
 
+## v0.5.0 - 2026-09-24
+
+- Add request-scoped Express tracing with AsyncLocalStorage and consistent manual capture IDs.
+- Add an opt-in traced fetch wrapper with exact-origin allowlists, explicit failure handles, telemetry exclusions, and manual redirects.
+
 ## v0.4.2 - 2026-09-11
 
 - Preserved Node 22 compatibility by restoring Node 22 declarations and validating the supported type/runtime floor.
