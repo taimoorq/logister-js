@@ -12,3 +12,5 @@ export function getNodeRuntimeContext(extra: LogisterContext = {}): LogisterCont
     ...extra
   };
 }
+
+export { currentTraceContext, enableNodeRequestContext, withTraceContext } from "./node-context";

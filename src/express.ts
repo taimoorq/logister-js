@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { incomingTraceContext } from "./trace";
+import { enableNodeRequestContext, withTraceContext } from "./node-context";
 
 import type { ErrorRequestHandler, NextFunction, Request, RequestHandler, Response } from "express";
 
@@ -21,6 +22,8 @@ export interface LogisterRequestContext {
   startedAt: number;
   traceId?: string | undefined;
   spanId?: string | undefined;
+  parentSpanId?: string | undefined;
+  flags?: string | undefined;
 }
 
 export interface LogisterExpressOptions {
@@ -37,6 +40,7 @@ export interface LogisterExpressOptions {
 
 export function createLogisterMiddleware(options: LogisterExpressOptions): RequestHandler {
   const settings = withDefaults(options);
+  enableNodeRequestContext(settings.client);
 
   return function logisterMiddleware(req: Request, res: Response, next: NextFunction) {
     const context = buildRequestContext(req, settings);
@@ -54,6 +58,8 @@ export function createLogisterMiddleware(options: LogisterExpressOptions): Reque
           void settings.client.captureTransaction(transactionName, durationMs, {
             traceId: latestContext.traceId,
             requestId: latestContext.requestId,
+            spanId: latestContext.spanId,
+            parentSpanId: latestContext.parentSpanId,
             context: {
               request: serializeRequestContext(latestContext),
               http: {
@@ -70,6 +76,7 @@ export function createLogisterMiddleware(options: LogisterExpressOptions): Reque
             traceId: latestContext.traceId ?? latestContext.requestId,
             requestId: latestContext.requestId,
             spanId: latestContext.spanId,
+            parentSpanId: latestContext.parentSpanId,
             context: {
               route: transactionName,
               request: serializeRequestContext(latestContext),
@@ -82,7 +89,9 @@ export function createLogisterMiddleware(options: LogisterExpressOptions): Reque
       });
     }
 
-    next();
+    res.setHeader("x-request-id", context.requestId);
+    withTraceContext({traceId: context.traceId!, spanId: context.spanId!, parentSpanId: context.parentSpanId,
+      requestId: context.requestId, flags: context.flags!}, next);
   };
 }
 
@@ -111,6 +120,7 @@ export function createLogisterErrorHandler(options: LogisterExpressOptions): Err
     markErrorCaptured(error);
 
     void settings.client.captureException(error, {
+      traceId: context.traceId, spanId: context.spanId, parentSpanId: context.parentSpanId, requestId: context.requestId,
       context: {
         request: serializeRequestContext(context),
         http: {
@@ -170,13 +180,10 @@ function withDefaults(options: LogisterExpressOptions): NormalizedExpressOptions
 }
 
 function buildRequestContext(req: Request, options: NormalizedExpressOptions): LogisterRequestContext {
-  const requestId = headerValue(req, options.requestIdHeader) ?? randomUUID();
-  const traceId = traceIdFromHeaders(req) ?? requestId;
+  const trace = incomingTraceContext(headerValue(req, "traceparent"), headerValue(req, options.requestIdHeader), headerValue(req, "x-trace-id"));
 
   return compact({
-    requestId,
-    traceId,
-    spanId: randomUUID().replace(/-/g, "").slice(0, 16),
+    ...trace,
     method: req.method,
     url: req.originalUrl || req.url,
     path: req.path || req.url,
@@ -235,6 +242,7 @@ function serializeRequestContext(context: LogisterRequestContext): LogisterConte
     request_id: context.requestId,
     trace_id: context.traceId,
     span_id: context.spanId,
+    parent_span_id: context.parentSpanId,
     method: context.method,
     url: context.url,
     path: context.path,
@@ -244,12 +252,6 @@ function serializeRequestContext(context: LogisterRequestContext): LogisterConte
     remote_ip: context.remoteIp,
     user_agent: context.userAgent
   });
-}
-
-function traceIdFromHeaders(req: Request): string | undefined {
-  const traceparent = headerValue(req, "traceparent");
-  const traceparentTraceId = traceparent?.split("-")[1];
-  return traceparentTraceId || headerValue(req, "x-trace-id");
 }
 
 function currentStatusCode(res: Response): number {

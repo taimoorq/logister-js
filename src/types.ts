@@ -77,6 +77,8 @@ export interface LogisterClientOptions {
 }
 
 export interface CaptureOptions {
+  spanId?: string | undefined;
+  parentSpanId?: string | undefined;
   level?: LogisterLevel | undefined;
   message?: string | undefined;
   fingerprint?: string | undefined;

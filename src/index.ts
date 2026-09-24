@@ -17,3 +17,7 @@ export type {
   PreparedLogisterEventPayload,
   SpanOptions
 } from "./types";
+
+export { createTraceContext, incomingTraceContext, parseTraceparent, traceHeaders, traceOptions } from "./trace";
+export type { TraceContext } from "./trace";
+export { createTracedFetch, LogisterFetchError } from "./traced-fetch";
