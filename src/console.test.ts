@@ -2,12 +2,14 @@ import { describe, expect, it, vi } from "vitest";
 
 import { LogisterClient } from "./client";
 import { instrumentConsole } from "./console";
+import { deliveredEvents } from "./test-support";
 
 function buildClient(fetchMock: ReturnType<typeof vi.fn>): LogisterClient {
   return new LogisterClient({
     apiKey: "test-token",
     baseUrl: "https://logister.example",
-    fetch: fetchMock as unknown as typeof fetch
+    fetch: fetchMock as unknown as typeof fetch,
+    batchCompression: false
   });
 }
 
@@ -29,10 +31,10 @@ describe("console integration", () => {
     });
 
     fakeConsole.warn("Queue backlog rising", { queue: "emails" });
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await client.flush();
     restore();
 
-    const payload = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    const payload = { event: deliveredEvents(fetchMock.mock.calls)[0]! };
     expect(payload.event.event_type).toBe("log");
     expect(payload.event.level).toBe("warn");
     expect(payload.event.message).toBe("Queue backlog rising {\"queue\":\"emails\"}");
@@ -55,10 +57,10 @@ describe("console integration", () => {
 
     const restore = instrumentConsole(client, { console: fakeConsole });
     fakeConsole.error("checkout failed", error);
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await client.flush();
     restore();
 
-    const payload = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    const payload = { event: deliveredEvents(fetchMock.mock.calls)[0]! };
     expect(payload.event.event_type).toBe("error");
     expect(payload.event.message).toBe("checkout failed");
     expect(payload.event.context.exception.class).toBe("Error");

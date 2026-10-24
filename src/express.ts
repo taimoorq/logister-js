@@ -8,6 +8,8 @@ import type { LogisterContext } from "./types";
 
 const REQUEST_CONTEXT_KEY = Symbol.for("logister.requestContext");
 const ERROR_CAPTURED_KEY = Symbol.for("logister.errorCaptured");
+// Frozen or non-extensible errors cannot carry the marker property.
+const capturedErrors = new WeakSet<object>();
 
 export interface LogisterRequestContext {
   requestId: string;
@@ -31,6 +33,10 @@ export interface LogisterExpressOptions {
   captureTransactions?: boolean | undefined;
   captureRequestSpans?: boolean | undefined;
   captureErrors?: boolean | undefined;
+  /** Include `req.ip` as `remote_ip`. Off by default because an IP address is personal data. */
+  captureRemoteIp?: boolean | undefined;
+  /** Fraction of requests, from 0 to 1, recorded as transactions and request spans. Default 1. */
+  transactionSampleRate?: number | undefined;
   requestIdHeader?: string | undefined;
   headerAllowList?: string[] | undefined;
   ignoreRoutes?: Array<string | RegExp> | undefined;
@@ -43,94 +49,106 @@ export function createLogisterMiddleware(options: LogisterExpressOptions): Reque
   enableNodeRequestContext(settings.client);
 
   return function logisterMiddleware(req: Request, res: Response, next: NextFunction) {
-    const context = buildRequestContext(req, settings);
-    setLogisterRequestContext(req, context);
-
-    if (settings.captureTransactions || settings.captureRequestSpans) {
-      res.on("finish", () => {
-        const latestContext = getLogisterRequestContext(req) ?? context;
-        if (matchesIgnoredRoute(settings.ignoreRoutes, req, latestContext)) return;
-
-        const transactionName = settings.transactionNamer?.(req, res) ?? defaultTransactionName(req, latestContext);
-        const durationMs = Math.max(0, Date.now() - context.startedAt);
-
-        if (settings.captureTransactions) {
-          void settings.client.captureTransaction(transactionName, durationMs, {
-            traceId: latestContext.traceId,
-            requestId: latestContext.requestId,
-            spanId: latestContext.spanId,
-            parentSpanId: latestContext.parentSpanId,
-            context: {
-              request: serializeRequestContext(latestContext),
-              http: {
-                status_code: res.statusCode
-              }
-            }
-          });
-        }
-
-        if (settings.captureRequestSpans) {
-          void settings.client.captureSpan(transactionName, durationMs, {
-            kind: "server",
-            status: res.statusCode >= 500 ? "error" : "ok",
-            traceId: latestContext.traceId ?? latestContext.requestId,
-            requestId: latestContext.requestId,
-            spanId: latestContext.spanId,
-            parentSpanId: latestContext.parentSpanId,
-            context: {
-              route: transactionName,
-              request: serializeRequestContext(latestContext),
-              http: {
-                status_code: res.statusCode
-              }
-            }
-          });
-        }
-      });
+    let context: LogisterRequestContext;
+    try {
+      context = buildRequestContext(req, settings);
+      setLogisterRequestContext(req, context);
+      if (isSampled(settings.transactionSampleRate)) recordOnFinish(req, res, context, settings);
+      res.setHeader("x-request-id", context.requestId);
+    } catch (error) {
+      settings.client.reportInternalError(error);
+      next();
+      return;
     }
 
-    res.setHeader("x-request-id", context.requestId);
     withTraceContext({traceId: context.traceId!, spanId: context.spanId!, parentSpanId: context.parentSpanId,
       requestId: context.requestId, flags: context.flags!}, next);
   };
+}
+
+function recordOnFinish(req: Request, res: Response, context: LogisterRequestContext, settings: NormalizedExpressOptions): void {
+  if (!settings.captureTransactions && !settings.captureRequestSpans) return;
+
+  res.on("finish", () => {
+    try {
+      const latestContext = getLogisterRequestContext(req) ?? context;
+      if (matchesIgnoredRoute(settings.ignoreRoutes, req, latestContext)) return;
+
+      const transactionName = settings.transactionNamer?.(req, res) ?? defaultTransactionName(req, latestContext);
+      const durationMs = Math.max(0, Date.now() - context.startedAt);
+
+      if (settings.captureTransactions) {
+        settings.client.enqueueTransaction(transactionName, durationMs, {
+          traceId: latestContext.traceId,
+          requestId: latestContext.requestId,
+          spanId: latestContext.spanId,
+          parentSpanId: latestContext.parentSpanId,
+          context: {
+            request: serializeRequestContext(latestContext),
+            http: {
+              status_code: res.statusCode
+            }
+          }
+        });
+      }
+
+      if (settings.captureRequestSpans) {
+        settings.client.enqueueSpan(transactionName, durationMs, {
+          kind: "server",
+          status: res.statusCode >= 500 ? "error" : "ok",
+          traceId: latestContext.traceId ?? latestContext.requestId,
+          requestId: latestContext.requestId,
+          spanId: latestContext.spanId,
+          parentSpanId: latestContext.parentSpanId,
+          context: {
+            route: transactionName,
+            request: serializeRequestContext(latestContext),
+            http: {
+              status_code: res.statusCode
+            }
+          }
+        });
+      }
+    } catch (error) {
+      settings.client.reportInternalError(error);
+    }
+  });
 }
 
 export function createLogisterErrorHandler(options: LogisterExpressOptions): ErrorRequestHandler {
   const settings = withDefaults(options);
 
   return function logisterErrorHandler(error: unknown, req: Request, res: Response, next: NextFunction) {
-    if (!settings.captureErrors || isCapturedError(error)) {
-      next(error);
-      return;
+    try {
+      captureRouteError(error, req, res, settings);
+    } catch (captureError) {
+      settings.client.reportInternalError(captureError);
     }
-
-    const context = getLogisterRequestContext(req) ?? buildRequestContext(req, settings);
-    setLogisterRequestContext(req, context);
-
-    if (matchesIgnoredRoute(settings.ignoreRoutes, req, context)) {
-      next(error);
-      return;
-    }
-
-    if (settings.shouldCaptureError && !settings.shouldCaptureError(error, req, res)) {
-      next(error);
-      return;
-    }
-
-    markErrorCaptured(error);
-
-    void settings.client.captureException(error, {
-      traceId: context.traceId, spanId: context.spanId, parentSpanId: context.parentSpanId, requestId: context.requestId,
-      context: {
-        request: serializeRequestContext(context),
-        http: {
-          status_code: currentStatusCode(res)
-        }
-      }
-    });
 
     next(error);
   };
+}
+
+function captureRouteError(error: unknown, req: Request, res: Response, settings: NormalizedExpressOptions): void {
+  if (!settings.captureErrors || isCapturedError(error)) return;
+
+  const context = getLogisterRequestContext(req) ?? buildRequestContext(req, settings);
+  setLogisterRequestContext(req, context);
+
+  if (matchesIgnoredRoute(settings.ignoreRoutes, req, context)) return;
+  if (settings.shouldCaptureError && !settings.shouldCaptureError(error, req, res)) return;
+
+  markErrorCaptured(error);
+
+  settings.client.enqueueException(error, {
+    traceId: context.traceId, spanId: context.spanId, parentSpanId: context.parentSpanId, requestId: context.requestId,
+    context: {
+      request: serializeRequestContext(context),
+      http: {
+        status_code: currentStatusCode(res)
+      }
+    }
+  });
 }
 
 export function getLogisterRequestContext(req: Request): LogisterRequestContext | undefined {
@@ -154,6 +172,8 @@ interface NormalizedExpressOptions {
   captureTransactions: boolean;
   captureRequestSpans: boolean;
   captureErrors: boolean;
+  captureRemoteIp: boolean;
+  transactionSampleRate: number;
   requestIdHeader: string;
   headerAllowList: string[];
   ignoreRoutes: Array<string | RegExp>;
@@ -171,8 +191,10 @@ function withDefaults(options: LogisterExpressOptions): NormalizedExpressOptions
     captureTransactions: options.captureTransactions ?? true,
     captureRequestSpans: options.captureRequestSpans ?? false,
     captureErrors: options.captureErrors ?? true,
+    captureRemoteIp: options.captureRemoteIp ?? false,
+    transactionSampleRate: sampleRate(options.transactionSampleRate),
     requestIdHeader: options.requestIdHeader?.toLowerCase() ?? "x-request-id",
-    headerAllowList: (options.headerAllowList ?? ["user-agent", "x-request-id", "x-forwarded-for"]).map((value) => value.toLowerCase()),
+    headerAllowList: (options.headerAllowList ?? ["user-agent", "x-request-id"]).map((value) => value.toLowerCase()),
     ignoreRoutes: options.ignoreRoutes ?? [],
     transactionNamer: options.transactionNamer,
     shouldCaptureError: options.shouldCaptureError
@@ -190,7 +212,7 @@ function buildRequestContext(req: Request, options: NormalizedExpressOptions): L
     route: routePattern(req),
     query: req.query,
     headers: allowedHeaders(req, options.headerAllowList),
-    remoteIp: req.ip,
+    remoteIp: options.captureRemoteIp ? req.ip : undefined,
     userAgent: headerValue(req, "user-agent"),
     startedAt: Date.now()
   });
@@ -259,18 +281,39 @@ function currentStatusCode(res: Response): number {
 }
 
 function markErrorCaptured(error: unknown): void {
-  if (error && typeof error === "object") {
+  if (!error || typeof error !== "object") return;
+
+  capturedErrors.add(error);
+  if (!Object.isExtensible(error)) return;
+  try {
     Object.defineProperty(error, ERROR_CAPTURED_KEY, {
       configurable: true,
       enumerable: false,
       writable: true,
       value: true
     });
+  } catch {
+    // Proxies and exotic objects can refuse the marker; the WeakSet still records it.
   }
 }
 
 function isCapturedError(error: unknown): boolean {
-  return Boolean(error && typeof error === "object" && ERROR_CAPTURED_KEY in error);
+  if (!error || typeof error !== "object") return false;
+  if (capturedErrors.has(error)) return true;
+  try {
+    return ERROR_CAPTURED_KEY in error;
+  } catch {
+    return false;
+  }
+}
+
+function sampleRate(value: number | undefined): number {
+  if (typeof value !== "number" || Number.isNaN(value)) return 1;
+  return Math.min(1, Math.max(0, value));
+}
+
+function isSampled(rate: number): boolean {
+  return rate >= 1 || (rate > 0 && Math.random() < rate);
 }
 
 function compact<T extends Record<string, unknown>>(value: T): T {

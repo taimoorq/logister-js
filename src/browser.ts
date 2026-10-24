@@ -10,7 +10,17 @@ export interface BrowserPageLoadOptions {
   performance?: Performance | undefined;
 }
 
+/** Records page-load and resource timing spans. Resolves even when delivery fails;
+ * failures go to the client's `onError`. */
 export async function capturePageLoad(client: LogisterClient, options: BrowserPageLoadOptions = {}): Promise<void> {
+  try {
+    await recordPageLoad(client, options);
+  } catch (error) {
+    client.reportInternalError(error);
+  }
+}
+
+async function recordPageLoad(client: LogisterClient, options: BrowserPageLoadOptions): Promise<void> {
   const performanceRef = options.performance ?? globalThis.performance;
   if (!performanceRef?.getEntriesByType) return;
 
@@ -41,7 +51,7 @@ export async function capturePageLoad(client: LogisterClient, options: BrowserPa
     .sort((a, b) => b.duration - a.duration)
     .slice(0, options.maxResources ?? 20);
 
-  await Promise.all(resources.map((resource) => client.captureSpan(resourceName(resource.name), resource.duration, {
+  await Promise.allSettled(resources.map((resource) => client.captureSpan(resourceName(resource.name), resource.duration, {
     kind: "resource",
     traceId,
     parentSpanId: rootSpanId,
@@ -56,7 +66,11 @@ export async function capturePageLoad(client: LogisterClient, options: BrowserPa
         decoded_body_size: resource.decodedBodySize
       }
     }
-  })));
+  }))).then((results) => {
+    for (const result of results) {
+      if (result.status === "rejected") client.reportInternalError(result.reason);
+    }
+  });
 }
 
 function navigationBreakdown(entry: PerformanceNavigationTiming): LogisterContext {

@@ -8,12 +8,14 @@ import {
   createLogisterMiddleware,
   getLogisterRequestContext
 } from "./express";
+import { deliveredEvents } from "./test-support";
 
 function buildClient(fetchMock: ReturnType<typeof vi.fn>): LogisterClient {
   return new LogisterClient({
     apiKey: "test-token",
     baseUrl: "https://logister.example",
-    fetch: fetchMock as unknown as typeof fetch
+    fetch: fetchMock as unknown as typeof fetch,
+    batchCompression: false
   });
 }
 
@@ -37,10 +39,10 @@ describe("Express integration", () => {
     expect(response.body.requestId).toBe("req-123");
     expect(response.body.route).toBe("/orders/:id");
 
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await client.flush();
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    const payload = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    const payload = { event: deliveredEvents(fetchMock.mock.calls)[0]! };
     expect(payload.event.event_type).toBe("transaction");
     expect(payload.event.message).toBe("/orders/:id");
     expect(payload.event.context.request.request_id).toBe("req-123");
@@ -63,10 +65,10 @@ describe("Express integration", () => {
       .set("X-Trace-Id", "trace-123")
       .expect(204);
 
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await client.flush();
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    const payload = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    const payload = { event: deliveredEvents(fetchMock.mock.calls)[0]! };
     expect(payload.event.event_type).toBe("span");
     expect(payload.event.kind).toBe("server");
     expect(payload.event.status).toBe("ok");
@@ -95,12 +97,12 @@ describe("Express integration", () => {
       .set("X-Request-Id", "req-500")
       .expect(500);
 
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await client.flush();
 
-    const bodies = fetchMock.mock.calls.map((call) => JSON.parse(String(call[1]?.body)));
-    const errorPayload = bodies.find((body) => body.event?.event_type === "error");
+    const events = deliveredEvents(fetchMock.mock.calls);
+    const errorPayload = { event: events.find((event) => event.event_type === "error")! };
 
-    expect(errorPayload).toBeTruthy();
+    expect(errorPayload.event).toBeTruthy();
     expect(errorPayload.event.message).toBe("BROKEN");
     expect(errorPayload.event.context.request.request_id).toBe("req-500");
     expect(errorPayload.event.context.request.path).toBe("/boom");

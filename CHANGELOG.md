@@ -1,5 +1,45 @@
 # Changelog
 
+## v0.6.0 - 2026-10-23
+
+### Security
+
+- Telemetry failures can no longer crash the host process. Express, console, traced-fetch and browser page-load capture used fire-and-forget promises with no rejection handler, so a `401`, `404`, `413`, `422` or a timeout produced an unhandled rejection that ends a Node process.
+  - These captures now use a background queue that never rejects.
+  - Failures go to the new `onError` client option. Without one, the SDK writes a single `console.warn`.
+- `instrumentConsole` no longer throws at the call site. Circular, deeply nested, oversized and hostile arguments (throwing getters, proxies) are serialized with a cycle guard and depth, key, array and string caps. Capture runs only after the original console method, inside a guard.
+- Console capture is reentrancy-safe. Output written while capturing, including the SDK's own diagnostics, is not captured, so `process.on("unhandledRejection", (e) => console.error(e))` cannot loop.
+- Non-`Error` throwables and nested `AggregateError.errors` values are serialized with the same guards.
+- Added the shared Logister redaction spec, applied to every event's `message` and `context`, and to check-in context:
+  - Sensitive key names are redacted.
+  - Bearer and Basic credentials, JWT-shaped values and `lgst_` keys are scrubbed from strings.
+  - Sensitive query parameters are redacted in URLs, query strings and referers.
+  - The new `redactKeys` option adds keys to the list.
+- Express no longer captures `req.ip` by default (opt in with `captureRemoteIp: true`). `x-forwarded-for` was removed from the default header allowlist. `originalUrl`, `req.query` and allowlisted headers are redacted.
+- Telemetry requests use `redirect: "error"`, so the API key is never replayed to a redirect target.
+- The client warns once when `baseUrl` uses plain `http://` on a non-loopback host.
+
+### Added
+
+- Background delivery for integrations:
+  - The queue is bounded (`maxQueueSize`, default 1000). New events are dropped and counted in `droppedEventCount` when it is full.
+  - Queued events go to the batch endpoint every `flushIntervalMs` (default 1000 ms), immediately once `batchSize` events are waiting, on `flush()` or `close()`, and on Node's `beforeExit`.
+  - New methods: `enqueueEvent`, `enqueueException`, `enqueueMessage`, `enqueueMetric`, `enqueueTransaction` and `enqueueSpan`.
+- `maxEventBytes` (default 256 KiB) trims an oversized event's context instead of letting the server reject its batch. Messages are capped at 16,384 characters.
+- Express `transactionSampleRate` (0 to 1, default 1) samples request transactions and server spans. Errors are always captured.
+- `client.redact(value)` applies the client's redaction and serialization bounds to any value.
+- `LogisterRequestError`, `LogisterTimeoutError` and `REDACTED` are exported.
+
+### Changed
+
+- Express, console and traced-fetch events are now batched in the background instead of being posted one request at a time. Call `await client.flush()` (or `close()`) before a short-lived process exits if it cannot rely on `beforeExit`.
+- `capturePageLoad()` resolves even when delivery fails, and reports failures to `onError`.
+- Background flush, retry and per-attempt timeout timers are `unref()`'d, so they never keep a Node process alive.
+- When the retry delay is at `maxRetryDelayMs`, jitter now lowers the delay instead of being dropped, so capped retries still spread out. A server's `Retry-After` value is never shortened.
+- Express error capture tolerates frozen and non-extensible errors.
+- Directly awaited `capture*`, `sendEvent` and `sendEvents` calls keep their behavior. They post immediately and reject on failure.
+- Refreshed the development lockfile to patched `vite`, `vitest`, `body-parser` and `source-map-js` releases so the audit gate passes.
+
 ## v0.5.0 - 2026-09-24
 
 - Add request-scoped Express tracing with AsyncLocalStorage and consistent manual capture IDs.

@@ -1,4 +1,5 @@
 import { LogisterClient } from "./client";
+import { isCaptureSuppressed, runWithCaptureSuppressed } from "./internal";
 import type { CaptureOptions, LogisterContext, LogisterLevel } from "./types";
 
 type ConsoleMethodName = "debug" | "info" | "log" | "warn" | "error";
@@ -27,23 +28,16 @@ export function instrumentConsole(
 
     targetConsole[method] = ((...args: unknown[]) => {
       original(...args);
+      // Skip console output produced while capturing, including the SDK's own diagnostics,
+      // so handlers such as unhandledRejection -> console.error cannot loop.
+      if (isCaptureSuppressed()) return;
 
-      const error = captureExceptionsAsErrors ? args.find((value) => value instanceof Error) : undefined;
-      const message = formatConsoleMessage(args, error);
-      const captureOptions = buildConsoleCaptureOptions(method, args, options.context);
-
-      if (error instanceof Error) {
-        void client.captureException(error, {
-          ...captureOptions,
-          level: consoleMethodLevel(method),
-          message
-        });
-        return;
-      }
-
-      void client.captureMessage(message, {
-        ...captureOptions,
-        level: consoleMethodLevel(method)
+      runWithCaptureSuppressed(() => {
+        try {
+          captureConsoleCall(client, method, args, options.context, captureExceptionsAsErrors);
+        } catch (error) {
+          client.reportInternalError(error);
+        }
       });
     }) as ConsoleLike[ConsoleMethodName];
   }
@@ -58,9 +52,36 @@ export function instrumentConsole(
   };
 }
 
-function buildConsoleCaptureOptions(
+function captureConsoleCall(
+  client: LogisterClient,
   method: ConsoleMethodName,
   args: unknown[],
+  defaultContext: LogisterContext | undefined,
+  captureExceptionsAsErrors: boolean
+): void {
+  const error = captureExceptionsAsErrors ? args.find((value) => value instanceof Error) : undefined;
+  const serialized = args.map((value) => client.redact(value));
+  const message = formatConsoleMessage(args, serialized, error);
+  const captureOptions = buildConsoleCaptureOptions(method, serialized, defaultContext);
+
+  if (error instanceof Error) {
+    client.enqueueException(error, {
+      ...captureOptions,
+      level: consoleMethodLevel(method),
+      message
+    });
+    return;
+  }
+
+  client.enqueueMessage(message, {
+    ...captureOptions,
+    level: consoleMethodLevel(method)
+  });
+}
+
+function buildConsoleCaptureOptions(
+  method: ConsoleMethodName,
+  serializedArgs: unknown[],
   defaultContext: LogisterContext | undefined
 ): CaptureOptions {
   return {
@@ -73,49 +94,30 @@ function buildConsoleCaptureOptions(
         method
       },
       log_record: {
-        arguments: args.map((value) => serializeConsoleValue(value)),
+        arguments: serializedArgs,
         original_method: method
       }
     }
   };
 }
 
-function formatConsoleMessage(args: unknown[], error: Error | undefined): string {
-  const values = error ? args.filter((value) => value !== error) : args;
-  const rendered = values
-    .map((value) => {
-      if (typeof value === "string") return value;
-      if (value instanceof Error) return `${value.name}: ${value.message}`;
-      try {
-        return JSON.stringify(serializeConsoleValue(value));
-      } catch {
-        return String(value);
+function formatConsoleMessage(args: unknown[], serialized: unknown[], error: Error | undefined): string {
+  const rendered = args
+    .flatMap((value, index) => {
+      if (error && value === error) return [];
+      const entry = serialized[index];
+      if (typeof entry === "string") return [entry];
+      if (value instanceof Error && entry && typeof entry === "object") {
+        const { class: name, message } = entry as { class?: unknown; message?: unknown };
+        return [`${String(name)}: ${String(message)}`];
       }
+      return [JSON.stringify(entry) ?? String(entry)];
     })
     .filter((value) => value.length > 0);
 
   if (rendered.length > 0) return rendered.join(" ");
   if (error) return error.message || error.name;
   return "console event";
-}
-
-function serializeConsoleValue(value: unknown): unknown {
-  if (value === null || value === undefined) return value;
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
-  if (value instanceof Error) {
-    return {
-      class: value.name,
-      message: value.message
-    };
-  }
-  if (Array.isArray(value)) return value.map((entry) => serializeConsoleValue(entry));
-  if (typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([key, entry]) => [key, serializeConsoleValue(entry)])
-    );
-  }
-
-  return String(value);
 }
 
 function detectRuntime(): string {

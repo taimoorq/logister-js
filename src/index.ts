@@ -1,4 +1,5 @@
-export { LogisterClient } from "./client";
+export { LogisterClient, LogisterRequestError, LogisterTimeoutError } from "./client";
+export { REDACTED } from "./sanitize";
 export { capturePageLoad } from "./browser";
 export { instrumentConsole } from "./console";
 export type {
