@@ -63,6 +63,8 @@ Open the project inbox and confirm that **README test error** appears. A rejecte
 - [Express quick start](#express-quick-start)
 - [Console logging](#console-logging)
 - [Core API](#core-api)
+- [Background delivery and failures](#background-delivery-and-failures)
+- [Redaction](#redaction)
 - [Using project Insights](#using-project-insights)
 - [GitHub source context and deployments](#github-source-context-and-deployments)
 - [Node helpers](#node-helpers)
@@ -128,7 +130,7 @@ await client.captureMessage("SDK booted", {
 });
 ```
 
-The client throws when Logister returns a non-2xx response, so failed delivery remains visible to your application. Decide at the call site whether to retry, log locally, or continue without telemetry.
+Directly awaited `capture*`, `sendEvent` and `sendEvents` calls reject when Logister returns a non-2xx response, so failed delivery stays visible to your code. Decide at the call site whether to retry, log locally, or continue without telemetry. The Express, console, traced-fetch and browser integrations never reject or throw; see [Background delivery and failures](#background-delivery-and-failures).
 
 ## Express quick start
 
@@ -188,6 +190,18 @@ What this gives you by default:
 - optional completed-request `server` spans for request load waterfall charts
 - adopted or generated request IDs
 - request context you can reuse in custom logs and metrics
+- the URL, query, and `user-agent` and `x-request-id` headers, with sensitive values [redacted](#redaction)
+
+Events are queued and sent in batches in the background. A Logister outage, a bad API key or a slow network never fails or crashes your requests.
+
+Express options:
+
+- `captureRemoteIp` (default `false`): record `req.ip` as `remote_ip`. An IP address is personal data, so it is off unless you opt in. Configure Express `trust proxy` if you want the forwarded client address.
+- `transactionSampleRate` (default `1`): the fraction of requests, from 0 to 1, recorded as transactions and request spans. Errors are always captured.
+- `headerAllowList` (default `["user-agent", "x-request-id"]`): the request headers to record. Sensitive headers such as `authorization` and `cookie` are redacted even when you allow them.
+- `captureTransactions`, `captureRequestSpans`, `captureErrors`, `ignoreRoutes`, `transactionNamer` and `shouldCaptureError`.
+
+Since 0.6.0, `x-forwarded-for` is not in the default header allowlist and the client IP is not captured by default.
 
 ## Console logging
 
@@ -217,6 +231,14 @@ What this records:
 - `console.error()` calls that include an `Error` object as Logister `error` events
 - console method metadata plus serialized arguments in event context
 
+Capture runs after the original console method and can never throw at your call site:
+
+- Circular references are replaced with `"[Circular]"`.
+- Deep, wide or large values are truncated.
+- Throwing getters and proxies become `"[Unserializable]"`.
+- Arguments and the rendered message are [redacted](#redaction).
+- Console output written while capturing, including the SDK's own failure warnings, is not captured again, so `process.on("unhandledRejection", (e) => console.error(e))` cannot loop.
+
 Recommended middleware order:
 
 1. `createLogisterMiddleware()` near the top of the stack
@@ -235,6 +257,9 @@ Recommended middleware order:
 - `prepareEvents(payloads)`
 - `sendEvent(payload)`
 - `sendEvents(payloads)`
+- `enqueueException`, `enqueueMessage`, `enqueueMetric`, `enqueueTransaction`, `enqueueSpan`, `enqueueEvent`
+- `flush()`, `close()`
+- `redact(value)`
 
 Capture options support per-event `environment`, `release`, `traceId`, `requestId`, `sessionId`, and `userId`. Metric options also accept `unit`; span options add `spanId`, `parentSpanId`, `kind`, `status`, `startedAt`, and `endedAt`; check-in options accept `release`, `durationMs`, `expectedIntervalSeconds`, `traceId`, and `requestId`.
 
@@ -278,9 +303,16 @@ defaults are not appropriate. `requestTimeoutMs` bounds each fetch attempt and
 public send call. Retryable responses honor numeric or HTTP-date `Retry-After` values,
 subject to the configured total and per-delay caps.
 The defaults are 5 seconds per attempt, 65 seconds total, a 30-second retry-delay
-cap, and 20% positive jitter.
+cap, and 20% jitter. Jitter adds to the delay, except at the cap, where it subtracts
+so capped retries still spread out. A server's `Retry-After` value is never shortened.
+Telemetry requests refuse redirects (`redirect: "error"`) so the API key is never sent
+to a redirect target.
 
-Browser apps can record navigation and resource timing with the browser entrypoint. A browser cannot keep an ingest key secret: anyone who can load the page can inspect and reuse it. Use a write-only project key only if that abuse risk is acceptable, or send browser telemetry through your own backend.
+Browser apps can record navigation and resource timing with the browser entrypoint.
+
+> **The browser entry exposes your ingest key.** Every visitor can read the key from the page, its network requests and its bundle, and can reuse it to send telemetry to your project. Use a dedicated write-only key only if that abuse risk is acceptable, or send browser telemetry through your own backend instead.
+
+`capturePageLoad()` resolves even when delivery fails, and reports failures to the client's `onError`.
 
 ```ts
 import { LogisterClient } from "logister-js";
@@ -303,6 +335,81 @@ await capturePageLoad(client, {
   maxResources: 20
 });
 ```
+
+## Background delivery and failures
+
+The Express, console, traced-fetch and browser integrations hand events to an
+in-memory queue instead of posting each one. You can do the same with the
+`enqueue*` methods. They return `true` when the event was queued and never throw
+or reject:
+
+```ts
+const client = new LogisterClient({
+  apiKey: process.env.LOGISTER_API_KEY ?? "",
+  baseUrl: process.env.LOGISTER_BASE_URL ?? "https://logister.org",
+  maxQueueSize: 1000,     // events beyond this are dropped and counted
+  flushIntervalMs: 1000,  // the longest a queued event waits for a batch
+  maxEventBytes: 262144,  // oversized events have their context trimmed
+  onError: (error) => myLogger.warn({ error }, "Logister delivery failed")
+});
+
+client.enqueueMessage("job finished", { context: { queue: "emails" } });
+
+// Before a short-lived script or serverless handler exits:
+await client.flush();
+// or, to also stop accepting new background events:
+await client.close();
+```
+
+- Batches of up to `batchSize` events (default 50) go to the gzip/NDJSON batch endpoint. A batch is sent at once when `batchSize` events are waiting, otherwise after `flushIntervalMs`.
+- In Node, queued events are also flushed on `beforeExit`. Background timers are `unref()`'d, so they never keep a process alive. A process that calls `process.exit()` should `await client.flush()` first.
+- When the queue already holds `maxQueueSize` events, new events are dropped and counted in `client.droppedEventCount`. `client.queuedEventCount` reports the backlog.
+- Each event is capped at `maxEventBytes`. Its context is compacted first. If it is still too large, only the correlation IDs are kept, with `logister_truncated: true`. Messages are capped at 16,384 characters.
+- Delivery and integration failures go to `onError`, and errors thrown by `onError` itself are ignored. Without `onError`, the client writes one `console.warn` and stays silent afterwards. `LogisterRequestError` (with `status`) and `LogisterTimeoutError` are exported for inspecting failures.
+
+The client warns once when `baseUrl` uses plain `http://` on a host other than `localhost`, `127.0.0.1` or `::1`, because the API key and telemetry would travel unencrypted.
+
+## Redaction
+
+Every event's `message` and `context` are redacted before they leave the process,
+and so is check-in context. The redaction covers captured URLs, query strings,
+referers, headers, request and user context, tags, breadcrumbs, log fields, span
+attributes and exception data. These rules are shared by all Logister SDKs.
+
+- **Keys.** A key is lowercased and every non-alphanumeric character is removed. It is then sensitive if it exactly matches one of these keys:
+
+  `password`, `passwd`, `pwd`, `secret`, `token`, `apikey`, `authorization`,
+  `proxyauthorization`, `cookie`, `setcookie`, `sessiontoken`, `sessionkey`,
+  `credential`, `credentials`, `privatekey`, `clientsecret`, `accesstoken`,
+  `refreshtoken`, `idtoken`, `authtoken`, `xapikey`, `xauthtoken`, `xaccesstoken`,
+  `xcsrftoken`, `xxsrftoken`, `signature`, `ssn`, `creditcard`, `cardnumber`, `cvv`
+
+  It is also sensitive if it contains `token`, `secret`, `password`, `passwd`, `apikey`, `authorization`, `credential` or `cookie`. So `X-Api-Key`, `api_key`, `githubToken` and `DB_PASSWORD` are all redacted. The value becomes `"[REDACTED]"`.
+- **Values.** Strings are scrubbed of `Bearer <credential>` and `Basic <credential>` (the scheme word is kept), JWT-shaped values and `lgst_` keys.
+- **URLs.** The scheme, host and path are kept. A sensitive query parameter keeps its name and its value becomes `[REDACTED]`, for example `/callback?code=1&token=[REDACTED]`. Userinfo is redacted and the fragment is dropped.
+- **Exempt.** The SDK's own envelope fields are never changed: `uuid`, `event_type`, and the top-level `trace_id`, `span_id`, `parent_span_id`, `request_id` and `session_id` in context.
+
+Add your own keys with `redactKeys`. They are normalized the same way and must match exactly:
+
+```ts
+const client = new LogisterClient({
+  apiKey: process.env.LOGISTER_API_KEY ?? "",
+  baseUrl: process.env.LOGISTER_BASE_URL ?? "https://logister.org",
+  redactKeys: ["account_number", "otp"]
+});
+
+client.redact({ otp: "123456", note: "Bearer abc123def456" });
+// => { otp: "[REDACTED]", note: "Bearer [REDACTED]" }
+```
+
+Context is also bounded while it is serialized:
+
+- Cycles become `"[Circular]"`.
+- Depth is capped at 12 and arrays at 200 items.
+- Each object keeps at most 200 keys, and the whole event at most 400.
+- Strings are capped at 16,384 characters.
+
+Redaction is a safety net, not a data policy. Avoid sending personal data you do not need.
 
 ## Using project Insights
 

@@ -74,6 +74,16 @@ export interface LogisterClientOptions {
   totalTimeoutMs?: number | undefined;
   batchSize?: number | undefined;
   batchCompression?: boolean | undefined;
+  /** Events held for background delivery before new ones are dropped. Default 1000. */
+  maxQueueSize?: number | undefined;
+  /** How long background events wait before a batch is sent. Default 1000 ms. */
+  flushIntervalMs?: number | undefined;
+  /** Serialized size above which an event's context is truncated. Default 262144 bytes. */
+  maxEventBytes?: number | undefined;
+  /** Extra context keys to redact, matched like the built-in list after normalization. */
+  redactKeys?: string[] | undefined;
+  /** Receives background delivery and integration failures. They never reach the host application. */
+  onError?: ((error: unknown) => void) | undefined;
 }
 
 export interface CaptureOptions {

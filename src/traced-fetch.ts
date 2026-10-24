@@ -34,9 +34,9 @@ export function createTracedFetch(client: LogisterClient, options: { allowedOrig
       failed = true;
       throw new LogisterFetchError(error, trace);
     } finally {
-      if (trace) void client.captureSpan("HTTP request", performance.now() - start, {
+      if (trace) client.enqueueSpan("HTTP request", performance.now() - start, {
         ...traceOptions(trace), kind: "http", status: failed ? "error" : "ok", startedAt
-      }).catch(() => undefined);
+      });
     }
   };
 }

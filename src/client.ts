@@ -12,6 +12,15 @@ import type {
   PreparedLogisterEventPayload,
   SpanOptions
 } from "./types";
+import { runWithCaptureSuppressed } from "./internal";
+import {
+  COMPACT_CONTEXT_LIMITS,
+  envelopeContext,
+  Redactor,
+  sanitizeContext,
+  sanitizeValue,
+  truncateString
+} from "./sanitize";
 
 const DEFAULT_INGEST_PATH = "/api/v1/ingest_events";
 const DEFAULT_BATCH_INGEST_PATH = "/api/v1/ingest_events/batch";
@@ -23,15 +32,20 @@ const DEFAULT_REQUEST_TIMEOUT_MS = 5_000;
 const DEFAULT_TOTAL_TIMEOUT_MS = 65_000;
 const DEFAULT_MAX_RETRY_DELAY_MS = 30_000;
 const DEFAULT_RETRY_JITTER_RATIO = 0.2;
+const DEFAULT_MAX_QUEUE_SIZE = 1_000;
+const DEFAULT_FLUSH_INTERVAL_MS = 1_000;
+const DEFAULT_MAX_EVENT_BYTES = 256 * 1024;
+const MAX_MESSAGE_LENGTH = 16_384;
+const MAX_NESTED_ERRORS = 50;
 
-class LogisterRequestError extends Error {
+export class LogisterRequestError extends Error {
   constructor(readonly status: number, readonly retryAfterMs: number | undefined = undefined) {
     super(`Logister request failed with status ${status}`);
     this.name = "LogisterRequestError";
   }
 }
 
-class LogisterTimeoutError extends Error {
+export class LogisterTimeoutError extends Error {
   constructor(message: string) {
     super(message);
     this.name = "LogisterTimeoutError";
@@ -67,6 +81,17 @@ export class LogisterClient {
   private readonly batchSize: number;
   private readonly batchCompression: boolean;
   private readonly generatedEventIds = new WeakMap<object, string>();
+  private readonly maxQueueSize: number;
+  private readonly flushIntervalMs: number;
+  private readonly maxEventBytes: number;
+  private readonly redactor: Redactor;
+  private readonly onError: ((error: unknown) => void) | undefined;
+  private readonly queue: PreparedLogisterEventPayload[] = [];
+  private flushTimer: ReturnType<typeof setTimeout> | undefined;
+  private flushing: Promise<void> | undefined;
+  private closed = false;
+  private dropped = 0;
+  private warnedAboutFailure = false;
 
   constructor(options: LogisterClientOptions) {
     if (!options.apiKey) throw new Error("LogisterClient requires apiKey");
@@ -84,7 +109,7 @@ export class LogisterClient {
     this.branch = options.branch;
     this.defaultContext = options.defaultContext ?? {};
     this.fetchImpl = options.fetch ?? fetch;
-    this.userAgent = options.userAgent ?? "logister-js/0.5.0";
+    this.userAgent = options.userAgent ?? "logister-js/0.6.0";
     this.maxRetries = nonNegativeInteger(options.maxRetries, 3);
     this.retryBaseDelayMs = nonNegativeNumber(options.retryBaseDelayMs, 100);
     this.maxRetryDelayMs = nonNegativeNumber(options.maxRetryDelayMs, DEFAULT_MAX_RETRY_DELAY_MS);
@@ -93,6 +118,100 @@ export class LogisterClient {
     this.totalTimeoutMs = positiveNumber(options.totalTimeoutMs, DEFAULT_TOTAL_TIMEOUT_MS);
     this.batchSize = positiveInteger(options.batchSize, 50);
     this.batchCompression = options.batchCompression ?? true;
+    this.maxQueueSize = positiveInteger(options.maxQueueSize, DEFAULT_MAX_QUEUE_SIZE);
+    this.flushIntervalMs = nonNegativeNumber(options.flushIntervalMs, DEFAULT_FLUSH_INTERVAL_MS);
+    this.maxEventBytes = positiveInteger(options.maxEventBytes, DEFAULT_MAX_EVENT_BYTES);
+    this.redactor = new Redactor(options.redactKeys);
+    this.onError = options.onError;
+    warnOnInsecureBaseUrl(this.baseUrl);
+  }
+
+  /** Events dropped because the background queue was full or the client was closed. */
+  get droppedEventCount(): number {
+    return this.dropped;
+  }
+
+  /** Events waiting for background delivery. */
+  get queuedEventCount(): number {
+    return this.queue.length;
+  }
+
+  /** Applies this client's redaction rules and serialization bounds to any value. Never throws. */
+  redact(value: unknown): unknown {
+    try {
+      return sanitizeValue(value, { redactor: this.redactor });
+    } catch {
+      return "[Unserializable]";
+    }
+  }
+
+  /**
+   * Queues an event for batched background delivery. Never throws or rejects: failures
+   * go to `onError`, and events beyond `maxQueueSize` are dropped and counted.
+   */
+  enqueueEvent(payload: LogisterEventPayload): boolean {
+    return this.enqueueWith(() => payload);
+  }
+
+  enqueueException(error: unknown, options: CaptureOptions = {}): boolean {
+    return this.enqueueWith(() => this.exceptionEvent(error, options));
+  }
+
+  enqueueMessage(message: string, options: CaptureOptions = {}): boolean {
+    return this.enqueueWith(() => this.messageEvent(message, options));
+  }
+
+  enqueueMetric(name: string, value: number, options: MetricOptions = {}): boolean {
+    return this.enqueueWith(() => this.metricEvent(name, value, options));
+  }
+
+  enqueueTransaction(name: string, durationMs: number, options: CaptureOptions = {}): boolean {
+    return this.enqueueWith(() => this.transactionEvent(name, durationMs, options));
+  }
+
+  enqueueSpan(name: string, durationMs: number, options: SpanOptions = {}): boolean {
+    return this.enqueueWith(() => this.spanEvent(name, durationMs, options));
+  }
+
+  /** Sends every queued event in batches. Resolves after the attempt; never rejects. */
+  flush(): Promise<void> {
+    if (this.flushTimer !== undefined) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = undefined;
+    }
+    if (!this.flushing) {
+      this.flushing = this.drainQueue().finally(() => {
+        this.flushing = undefined;
+        if (this.queue.length > 0) this.scheduleFlush();
+      });
+    }
+    return this.flushing;
+  }
+
+  /** Flushes queued events and stops accepting new background events. Never rejects. */
+  async close(): Promise<void> {
+    this.closed = true;
+    await this.flush();
+    pendingFlushClients.delete(this);
+  }
+
+  /** Routes an SDK or integration failure to `onError` without letting it escape. */
+  reportInternalError(error: unknown): void {
+    runWithCaptureSuppressed(() => {
+      try {
+        if (this.onError) {
+          this.onError(error);
+          return;
+        }
+        if (this.warnedAboutFailure) return;
+        this.warnedAboutFailure = true;
+        globalThis.console?.warn?.(
+          `[logister] Background telemetry failed: ${describeError(error)}. Further failures are silent; pass onError to observe them.`
+        );
+      } catch {
+        // Diagnostics must never become the host application's problem.
+      }
+    });
   }
 
   async sendEvent(payload: LogisterEventPayload): Promise<Response> {
@@ -121,9 +240,29 @@ export class LogisterClient {
   }
 
   async captureException(error: unknown, options: CaptureOptions = {}): Promise<Response> {
+    return this.sendEvent(this.exceptionEvent(error, options));
+  }
+
+  async captureMessage(message: string, options: CaptureOptions = {}): Promise<Response> {
+    return this.sendEvent(this.messageEvent(message, options));
+  }
+
+  async captureMetric(name: string, value: number, options: MetricOptions = {}): Promise<Response> {
+    return this.sendEvent(this.metricEvent(name, value, options));
+  }
+
+  async captureTransaction(name: string, durationMs: number, options: CaptureOptions = {}): Promise<Response> {
+    return this.sendEvent(this.transactionEvent(name, durationMs, options));
+  }
+
+  async captureSpan(name: string, durationMs: number, options: SpanOptions = {}): Promise<Response> {
+    return this.sendEvent(this.spanEvent(name, durationMs, options));
+  }
+
+  private exceptionEvent(error: unknown, options: CaptureOptions): LogisterEventPayload {
     const normalized = normalizeError(error);
 
-    return this.sendEvent(compact({
+    return compact({
       event_type: "error" as const,
       level: options.level ?? "error",
       message: options.message ?? extractMessage(normalized),
@@ -133,22 +272,22 @@ export class LogisterClient {
         ...options.context,
         exception: normalized
       }, options)
-    }));
+    });
   }
 
-  async captureMessage(message: string, options: CaptureOptions = {}): Promise<Response> {
-    return this.sendEvent(compact({
+  private messageEvent(message: string, options: CaptureOptions): LogisterEventPayload {
+    return compact({
       event_type: "log" as const,
       level: options.level ?? "info",
       message,
       fingerprint: options.fingerprint,
       occurred_at: normalizeTimestamp(options.occurredAt) ?? new Date().toISOString(),
       context: this.withCaptureContext(options.context, options)
-    }));
+    });
   }
 
-  async captureMetric(name: string, value: number, options: MetricOptions = {}): Promise<Response> {
-    return this.sendEvent(compact({
+  private metricEvent(name: string, value: number, options: MetricOptions): LogisterEventPayload {
+    return compact({
       event_type: "metric" as const,
       level: options.level ?? "info",
       message: name,
@@ -164,11 +303,11 @@ export class LogisterClient {
         value,
         unit: options.unit
       })
-    }));
+    });
   }
 
-  async captureTransaction(name: string, durationMs: number, options: CaptureOptions = {}): Promise<Response> {
-    return this.sendEvent(compact({
+  private transactionEvent(name: string, durationMs: number, options: CaptureOptions): LogisterEventPayload {
+    return compact({
       event_type: "transaction" as const,
       level: options.level ?? "info",
       message: name,
@@ -179,10 +318,10 @@ export class LogisterClient {
         transaction_name: name,
         duration_ms: durationMs
       }, options)
-    }));
+    });
   }
 
-  async captureSpan(name: string, durationMs: number, options: SpanOptions = {}): Promise<Response> {
+  private spanEvent(name: string, durationMs: number, options: SpanOptions): LogisterEventPayload {
     const spanId = options.spanId ?? randomId(16);
     const active = this.requestContextProvider?.() ?? {};
     options = { ...options, requestId: options.requestId ?? active.request_id as string | undefined,
@@ -190,7 +329,7 @@ export class LogisterClient {
     const traceId = options.traceId ?? active.trace_id as string | undefined ?? randomId(32);
     const startedAt = normalizeTimestamp(options.startedAt) ?? new Date(Date.now() - Math.max(0, durationMs)).toISOString();
 
-    return this.sendEvent(compact({
+    return compact({
       event_type: "span" as const,
       level: options.level ?? (options.status === "error" ? "error" : "info"),
       message: name,
@@ -220,7 +359,7 @@ export class LogisterClient {
         started_at: startedAt,
         ended_at: normalizeTimestamp(options.endedAt)
       }, options)
-    }));
+    });
   }
 
   async checkIn(slug: string, status: LogisterCheckInPayload["status"], options: CheckInOptions = {}): Promise<Response> {
@@ -235,7 +374,7 @@ export class LogisterClient {
         expected_interval_seconds: options.expectedIntervalSeconds,
         trace_id: options.traceId,
         request_id: options.requestId,
-        context: this.withDefaultContext(options.context)
+        context: this.sanitizedContext(this.withDefaultContext(options.context))
       })
     });
   }
@@ -249,19 +388,63 @@ export class LogisterClient {
     });
   }
 
-  private async postJson(path: string, body: unknown, deadlineAt = this.requestDeadline()): Promise<Response> {
+  private enqueueWith(build: () => LogisterEventPayload): boolean {
+    try {
+      if (this.closed || this.queue.length >= this.maxQueueSize) {
+        this.dropped += 1;
+        return false;
+      }
+      this.queue.push(this.normalizeEvent(build()) as PreparedLogisterEventPayload);
+      this.scheduleFlush();
+      return true;
+    } catch (error) {
+      this.reportInternalError(error);
+      return false;
+    }
+  }
+
+  private scheduleFlush(): void {
+    pendingFlushClients.add(this);
+    installExitFlush();
+    if (this.flushing) return;
+
+    const delayMs = this.queue.length >= this.batchSize ? 0 : this.flushIntervalMs;
+    if (this.flushTimer !== undefined) {
+      if (delayMs > 0) return;
+      clearTimeout(this.flushTimer);
+    }
+    this.flushTimer = unrefTimer(setTimeout(() => {
+      this.flushTimer = undefined;
+      void this.flush();
+    }, delayMs));
+  }
+
+  private async drainQueue(): Promise<void> {
+    while (this.queue.length > 0) {
+      const batch = this.queue.splice(0, this.batchSize);
+      try {
+        await this.postEventBatch(batch, this.requestDeadline(), true);
+      } catch (error) {
+        this.reportInternalError(error);
+      }
+    }
+    if (this.queue.length === 0) pendingFlushClients.delete(this);
+  }
+
+  private async postJson(path: string, body: unknown, deadlineAt = this.requestDeadline(), background = false): Promise<Response> {
     return this.requestWithRetry(path, {
       method: "POST",
+      redirect: "error",
       headers: {
         "content-type": "application/json",
         authorization: `Bearer ${this.apiKey}`,
         "user-agent": this.userAgent
       },
       body: JSON.stringify(body)
-    }, deadlineAt);
+    }, deadlineAt, background);
   }
 
-  private async postEventBatch(events: readonly LogisterEventPayload[], deadlineAt: number): Promise<Response> {
+  private async postEventBatch(events: readonly LogisterEventPayload[], deadlineAt: number, background = false): Promise<Response> {
     const ndjson = `${events.map((event) => JSON.stringify({ event })).join("\n")}\n`;
     const encoded = await encodeBatchBody(ndjson, this.batchCompression);
     const headers: Record<string, string> = {
@@ -275,9 +458,10 @@ export class LogisterClient {
     try {
       return await this.requestWithRetry(DEFAULT_BATCH_INGEST_PATH, {
         method: "POST",
+        redirect: "error",
         headers,
         body: encoded.body
-      }, deadlineAt);
+      }, deadlineAt, background);
     } catch (error) {
       if (error instanceof LogisterRequestError && error.status === 413 && events.length > 1) {
         const middle = Math.ceil(events.length / 2);
@@ -285,12 +469,12 @@ export class LogisterClient {
         let firstResponse: Response | undefined;
         let secondResponse: Response | undefined;
         try {
-          firstResponse = await this.postEventBatch(events.slice(0, middle), deadlineAt);
+          firstResponse = await this.postEventBatch(events.slice(0, middle), deadlineAt, background);
         } catch (splitError) {
           failures.push(splitError);
         }
         try {
-          secondResponse = await this.postEventBatch(events.slice(middle), deadlineAt);
+          secondResponse = await this.postEventBatch(events.slice(middle), deadlineAt, background);
         } catch (splitError) {
           failures.push(splitError);
         }
@@ -303,7 +487,7 @@ export class LogisterClient {
         let response: Response | undefined;
         for (const event of events) {
           try {
-            response = await this.postJson(DEFAULT_INGEST_PATH, { event }, deadlineAt);
+            response = await this.postJson(DEFAULT_INGEST_PATH, { event }, deadlineAt, background);
           } catch (fallbackError) {
             failures.push(fallbackError);
           }
@@ -317,7 +501,7 @@ export class LogisterClient {
     }
   }
 
-  private async requestWithRetry(path: string, init: RequestInit, deadlineAt: number): Promise<Response> {
+  private async requestWithRetry(path: string, init: RequestInit, deadlineAt: number, background = false): Promise<Response> {
     let lastError: unknown;
 
     for (let attempt = 0; attempt <= this.maxRetries; attempt += 1) {
@@ -337,19 +521,44 @@ export class LogisterClient {
         if (attempt === this.maxRetries) throw error;
       }
 
-      await this.waitForRetry(lastError, attempt, deadlineAt);
+      await this.waitForRetry(lastError, attempt, deadlineAt, background);
     }
 
     throw lastError;
   }
 
   private normalizeEvent(payload: LogisterEventPayload): LogisterEventPayload {
-    return compact({
+    const event = compact({
       ...payload,
       uuid: this.stableEventIdentifier(payload),
       occurred_at: normalizeTimestamp(payload.occurred_at),
-      context: this.withDefaultContext(payload.context)
+      message: typeof payload.message === "string"
+        ? truncateString(this.redactor.scrubString(payload.message), MAX_MESSAGE_LENGTH)
+        : payload.message,
+      context: this.sanitizedContext(this.withDefaultContext(payload.context))
     });
+
+    return this.withinEventSize(event);
+  }
+
+  private sanitizedContext(context: LogisterContext | undefined): LogisterContext | undefined {
+    return context ? sanitizeContext(context, this.redactor) : undefined;
+  }
+
+  // Oversized events are trimmed rather than rejected by the server along with their batch.
+  private withinEventSize(event: LogisterEventPayload): LogisterEventPayload {
+    if (serializedBytes(event) <= this.maxEventBytes) return event;
+
+    const compacted = compact({
+      ...event,
+      message: event.message === undefined ? undefined : truncateString(event.message, 1_024),
+      context: event.context
+        ? { ...sanitizeContext(event.context, this.redactor, COMPACT_CONTEXT_LIMITS), logister_truncated: true }
+        : undefined
+    });
+    if (serializedBytes(compacted) <= this.maxEventBytes) return compacted;
+
+    return { ...compacted, context: { ...envelopeContext(event.context), logister_truncated: true } };
   }
 
   private stableEventIdentifier(payload: LogisterEventPayload): string {
@@ -374,7 +583,7 @@ export class LogisterClient {
 
     const timeoutMs = Math.max(1, Math.min(this.requestTimeoutMs, remaining));
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const timeout = unrefTimer(setTimeout(() => controller.abort(), timeoutMs));
     try {
       return await this.fetchImpl(url, { ...init, signal: controller.signal });
     } catch (error) {
@@ -387,22 +596,25 @@ export class LogisterClient {
     }
   }
 
-  private async waitForRetry(error: unknown, attempt: number, deadlineAt: number): Promise<void> {
+  private async waitForRetry(error: unknown, attempt: number, deadlineAt: number, background: boolean): Promise<void> {
     const remaining = deadlineAt - Date.now();
     if (remaining <= 0) throw new LogisterTimeoutError("Logister request exceeded its total timeout");
 
     const retryAfterMs = error instanceof LogisterRequestError ? error.retryAfterMs : undefined;
     const baseDelay = retryAfterMs ?? this.retryBaseDelayMs * (2 ** attempt);
     const boundedDelay = Math.min(Math.max(0, baseDelay), this.maxRetryDelayMs);
-    const jitterRoom = Math.max(0, this.maxRetryDelayMs - boundedDelay);
-    const jitter = Math.min(jitterRoom, boundedDelay * this.retryJitterRatio * Math.random());
-    const requestedDelay = boundedDelay + jitter;
+    const jitter = boundedDelay * this.retryJitterRatio * Math.random();
+    // At the delay cap, jitter downward so capped retries still spread out.
+    // A server-supplied Retry-After is never shortened.
+    const requestedDelay = boundedDelay + jitter <= this.maxRetryDelayMs || retryAfterMs !== undefined
+      ? Math.min(this.maxRetryDelayMs, boundedDelay + jitter)
+      : boundedDelay - jitter;
     if (requestedDelay >= remaining) {
-      await delay(remaining);
+      await delay(remaining, background);
       throw new LogisterTimeoutError("Logister request exceeded its total timeout while waiting to retry");
     }
 
-    await delay(requestedDelay);
+    await delay(requestedDelay, background);
   }
 
   private withDefaultContext(context: LogisterContext | undefined): LogisterContext | undefined {
@@ -483,7 +695,7 @@ function normalizeError(error: unknown): LogisterExceptionContext {
   return compact({
     class: "UnknownError",
     message: "Unknown error",
-    raw: error
+    raw: sanitizeValue(error)
   });
 }
 
@@ -503,7 +715,8 @@ function normalizeNestedError(error: unknown, depth = 0): LogisterContext | unde
   }
 
   if (Array.isArray(error)) {
-    const normalized = error.map((entry) => normalizeNestedError(entry, depth + 1) ?? serializeUnknown(entry));
+    const normalized = error.slice(0, MAX_NESTED_ERRORS)
+      .map((entry) => normalizeNestedError(entry, depth + 1) ?? sanitizeValue(entry));
     return normalized.length > 0 ? { values: normalized } : undefined;
   }
 
@@ -512,7 +725,7 @@ function normalizeNestedError(error: unknown, depth = 0): LogisterContext | unde
   }
 
   if (typeof error === "object") {
-    return { raw: serializeUnknown(error) };
+    return { raw: sanitizeValue(error) };
   }
 
   return { raw: error };
@@ -595,19 +808,6 @@ function parseStackFrame(line: string): LogisterStackFrame | undefined {
   }
 
   return undefined;
-}
-
-function serializeUnknown(value: unknown): unknown {
-  if (value === null || value === undefined) return value;
-  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") return value;
-  if (Array.isArray(value)) return value.map((entry) => serializeUnknown(entry));
-  if (typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([key, entry]) => [key, serializeUnknown(entry)])
-    );
-  }
-
-  return String(value);
 }
 
 function compact<T extends Record<string, unknown>>(value: T): T {
@@ -704,7 +904,73 @@ function isRetryableStatus(status: number): boolean {
   return RETRYABLE_STATUS_CODES.has(status) || status >= 500;
 }
 
-function delay(milliseconds: number): Promise<void> {
+function delay(milliseconds: number, unref = false): Promise<void> {
   if (milliseconds <= 0) return Promise.resolve();
-  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, milliseconds);
+    if (unref) unrefTimer(timer);
+  });
+}
+
+// Background timers must not keep a Node process alive; browsers return numbers here.
+function unrefTimer<T>(timer: T): T {
+  (timer as { unref?: () => void }).unref?.();
+  return timer;
+}
+
+const pendingFlushClients = new Set<LogisterClient>();
+let exitFlushInstalled = false;
+
+function installExitFlush(): void {
+  if (exitFlushInstalled) return;
+  const processRef = (globalThis as { process?: { on?: (event: string, listener: () => void) => unknown } }).process;
+  if (typeof processRef?.on !== "function") return;
+
+  exitFlushInstalled = true;
+  processRef.on("beforeExit", () => {
+    const clients = Array.from(pendingFlushClients);
+    pendingFlushClients.clear();
+    for (const client of clients) void client.flush();
+  });
+}
+
+function serializedBytes(value: unknown): number {
+  const json = JSON.stringify(value);
+  return typeof TextEncoder === "undefined" ? json.length : new TextEncoder().encode(json).byteLength;
+}
+
+function describeError(error: unknown): string {
+  try {
+    return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+  } catch {
+    return "unknown error";
+  }
+}
+
+const insecureBaseUrlsWarned = new Set<string>();
+
+function warnOnInsecureBaseUrl(baseUrl: string): void {
+  let url: URL;
+  try {
+    url = new URL(baseUrl);
+  } catch {
+    return;
+  }
+  if (url.protocol !== "http:" || isLoopbackHost(url.hostname) || insecureBaseUrlsWarned.has(url.origin)) return;
+
+  insecureBaseUrlsWarned.add(url.origin);
+  runWithCaptureSuppressed(() => {
+    try {
+      globalThis.console?.warn?.(
+        `[logister] baseUrl ${url.origin} uses plain http://; the API key and telemetry are sent unencrypted. Use https:// outside local development.`
+      );
+    } catch {
+      // Ignore console failures.
+    }
+  });
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  const host = hostname.replace(/^\[|\]$/gu, "").toLowerCase();
+  return host === "localhost" || host.endsWith(".localhost") || host === "::1" || /^127(?:\.\d{1,3}){3}$/u.test(host);
 }

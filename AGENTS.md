@@ -47,3 +47,13 @@ npm pack --dry-run
 npm view logister-js@X.Y.Z version engines --json
 gh release view vX.Y.Z
 ```
+
+## Telemetry safety contract
+
+- `src/sanitize.ts` implements the redaction spec shared by every Logister SDK
+  (key list, contains-rule, Bearer/Basic/JWT/`lgst_` scrubbing, URL query rules,
+  envelope-key exemption). Change it only in step with the other SDKs and keep the
+  README "Redaction" section and `src/sanitize.test.ts` fixtures in sync.
+- Integrations (Express, console, traced fetch, browser) must use the client's
+  `enqueue*` methods or otherwise contain every failure. Nothing from capture,
+  serialization or delivery may throw or reject into the host application.

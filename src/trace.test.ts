@@ -6,14 +6,15 @@ import { createLogisterMiddleware } from "./express";
 import { createTraceContext, incomingTraceContext, parseTraceparent, traceHeaders } from "./trace";
 import { createTracedFetch, LogisterFetchError } from "./traced-fetch";
 import { currentTraceContext } from "./node-context";
+import { decodeEvents } from "./test-support";
 
 describe("request correlation", () => {
   it("isolates concurrent Express requests and manual reports", async () => {
     const payloads: Record<string, any>[] = [];
     const client = new LogisterClient({apiKey: "test", baseUrl: "https://logister.example", fetch: (async (_url, init) => {
-      payloads.push(JSON.parse(String(init?.body)).event);
+      payloads.push(...decodeEvents(init));
       return new Response("{}", {status: 202});
-    }) as typeof fetch});
+    }) as typeof fetch, batchCompression: false});
     const app = express();
     app.use(createLogisterMiddleware({client, captureRequestSpans: true}));
     app.get("/work/:id", async (req, res) => {
@@ -24,6 +25,7 @@ describe("request correlation", () => {
     const traces = [createTraceContext(), createTraceContext()];
     await Promise.all(traces.map((trace, i) => request(app).get(`/work/${i === 0 ? "a" : "b"}`)
       .set(traceHeaders(trace, "https://api.example", ["https://api.example"]))));
+    await client.flush();
     for (const trace of traces) {
       const events = payloads.filter(p => p.context?.trace_id === trace.traceId);
       expect(events).toHaveLength(3);
